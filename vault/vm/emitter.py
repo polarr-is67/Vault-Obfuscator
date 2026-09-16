@@ -24,7 +24,14 @@ from vault.bytecode.instructions import OPCODE_LIST, OPCODE_COUNT
 from vault.presets.config import get_preset
 from vault.protection import build_anti_debug, build_load_checks, build_watchdog
 from vault.transforms.identifiers import IdentifierGenerator, IdentifierPolicy
-from vault.utils.luaval import lua_value
+from vault.utils.luaval import (
+    LuaRaw,
+    build_blob_alphabet,
+    can_blob,
+    encode_int_blob,
+    lua_quote_string,
+    lua_value,
+)
 from vault.utils.random import DeterministicRandom
 from vault.vm.runtime import RUNTIME_NAMES, VMRuntimeBuilder
 
@@ -422,16 +429,26 @@ class VMOmitter:
     # payload assembly
     # ------------------------------------------------------------------
 
+    def _blob(self, values) -> LuaRaw:
+        """Render an integer array as a decoder call ``D"..."`` (or, when the
+        values fall outside the encoding's exact range, a plain table)."""
+        vals = list(values)
+        if can_blob(vals):
+            literal = lua_quote_string(encode_int_blob(vals, self._alphabet))
+            return LuaRaw(self._blob_name + literal)
+        return LuaRaw(lua_value(vals))
+
     def _render_payload(self, payload: EncodedPayload) -> str:
         p = payload.params
+        b = self._blob
         q: List[object] = [
-            [
+            b([
                 p.lcg_a, p.lcg_c, p.lcg_m, p.lcg_s0,
                 p.stride, p.str_shift, p.int_mul, p.int_add,
-            ],
-            [p.chk_muls, p.chk_salts, payload.checksums],
-            [len(payload.meta_keys), payload.meta_blob],
-            [len(payload.messages), payload.msg_blob],
+            ]),
+            [b(p.chk_muls), b(p.chk_salts), b(payload.checksums)],
+            [len(payload.meta_keys), b(payload.meta_blob)],
+            [len(payload.messages), b(payload.msg_blob)],
         ]
         for epr in payload.protos:
             upv_flat: List[int] = []
@@ -440,15 +457,17 @@ class VMOmitter:
                 upv_flat.append(idx)
             q.append(
                 [
-                    epr.params,
-                    1 if epr.is_vararg else 0,
-                    epr.maxstack,
-                    len(epr.code_blob),
-                    len(epr.const_blob),
-                    epr.children,
-                    upv_flat,
-                    epr.code_blob,
-                    epr.const_blob,
+                    b([
+                        epr.params,
+                        1 if epr.is_vararg else 0,
+                        epr.maxstack,
+                        len(epr.code_blob),
+                        len(epr.const_blob),
+                    ]),
+                    b(epr.children),
+                    b(upv_flat),
+                    b(epr.code_blob),
+                    b(epr.const_blob),
                 ]
             )
         return lua_value(q)
@@ -500,10 +519,19 @@ class VMOmitter:
         load_checks = build_load_checks(name_map, cfg)
         adb = build_anti_debug(name_map, cfg)
 
+        # Derive the payload-string alphabet from a dedicated seed stream so
+        # its ordering is stable regardless of how much entropy the dispatch
+        # and identifier passes above happen to consume.
+        self._blob_name = name_map["BLOB"]
+        self._alphabet = build_blob_alphabet(
+            DeterministicRandom("vault-blob-alphabet:%d" % opts.seed)
+        )
+
         q = self._render_payload(payload)
         main_id = image.protomap[0] + 1
 
         out = runtime
+        out = out.replace("@@ALPHA@@", lua_quote_string(self._alphabet))
         out = out.replace("@@Q@@", q)
         out = out.replace("@@DISP@@", dispatch)
         out = out.replace("@@WK@@", watchdog)

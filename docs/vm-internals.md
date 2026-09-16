@@ -17,9 +17,16 @@ artefacts:
 * `pr.kv` – key/value descriptor pairs used for instruction-embedded
   lookups (e.g. upvalue names and constants that live in the payload).
 
-All payload strings are stored base64-encoded and keyed per build with the
-seed-derived stream, so constants extracted in one build cannot be replayed
-in another.
+All numeric payload arrays (the constant, code, upvalue and integrity blobs)
+are embedded as opaque printable **string blobs** rather than bare integer
+tables. Each blob packs its integers with a zig-zag base-45 varint over a
+seed-shuffled 90-character alphabet; a small load-time decoder (`@BLOB@`)
+expands each blob back into the integer array the loader consumes. Because the
+values are additionally keyed per build with the seed-derived LCG stream,
+constants extracted in one build cannot be replayed in another. Values that
+cannot be represented exactly by the integer encoding (non-integer floats, or
+integers at or beyond `2^52`) fall back to a plain numeric table so decoding
+is always exact.
 
 ## Instructions
 

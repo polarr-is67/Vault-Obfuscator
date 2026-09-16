@@ -22,8 +22,12 @@ identical program output.
 - **Three presets** (`low`, `medium`, `strong`) that scale opcode permutation,
   constant/upvalue shuffling, load-time integrity checks, a VM watchdog and
   anti-debug hooks.
-- **Encrypted payload**: constants and instructions are stored as integers,
-  scrambled by a seed-derived LCG, and decoded inside the VM at load time.
+- **Encrypted payload**: constants and instructions are scrambled by a
+  seed-derived LCG and decoded inside the VM at load time. The scrambled
+  numbers are not emitted as bare integer tables; each numeric array is
+  packed into an opaque printable **string blob** (a seed-shuffled base-45
+  varint alphabet) that the VM expands back into numbers at load time, so the
+  output contains no long `{123,123,123,...}` lists.
 - **Token-preserving minifier** for compact output (`--minify`) alongside
   pretty output for auditing (`--pretty`).
 - **CLI + Python API**: `vault-obf` on the command line or
@@ -125,7 +129,8 @@ source ──► frontend (lexer + parser + target validation)
 
 The emitted file contains:
 
-1. the encoded payload table `Q`,
+1. the encoded payload table `Q`, whose numeric arrays are embedded as opaque
+   printable string blobs and expanded by a small load-time decoder,
 2. a Lua runtime implementing a register-based VM (frame stack, closures with
    upvalue cells, varargs, metamethods, multi-value returns),
 3. a dispatch chain matching the build's permuted opcode numbers,

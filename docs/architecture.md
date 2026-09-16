@@ -76,8 +76,10 @@ prototype stores:
 * `const_blob` – packed constant values (numbers and strings).
 * Metadata: `nparams`, `nslots`, `maxstack`, `is_vararg`, debug names.
 
-`vault/bytecode.encoder.BytecodeEncoder` encodes the image into opaque
-payload strings (`kv`, `cs`, `cc`) injected into the output.
+`vault/bytecode.encoder.BytecodeEncoder` encodes the image into the payload
+tables injected into the output. The `vault/vm.emitter` then serialises each
+numeric array as an opaque printable string blob (see `vault/utils/luaval`),
+so the payload holds no long bare integer lists.
 
 ## VM emitter
 

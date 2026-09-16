@@ -33,6 +33,7 @@ RUNTIME_NAMES: list = [
     "TY", "CHR", "FLR",
     "REG",
     "MKT", "EMT",
+    "BLOB",
     "Q",
     "PT",
     "RDK",
@@ -108,6 +109,43 @@ def build_runtime_source(name_map: Dict[str, str]) -> str:
     L.append("local K_D=10")
     L.append("local K_M=11")
 
+    # ------------------------------------------------------------------
+    # payload string decoder
+    #
+    # Numeric payload arrays are embedded as opaque printable strings rather
+    # than bare number tables.  Each character carries one base-45 digit plus
+    # a continuation flag; values are zig-zag encoded so negatives round-trip.
+    # This must be defined before @Q@ is built, since @Q@ calls it.
+    # ------------------------------------------------------------------
+    L.append(r("""
+local @BLOB@
+do
+  local AL=@@ALPHA@@
+  local RV={}
+  for qi=1,#AL do RV[AL:byte(qi)]=qi-1 end
+  @BLOB@=function(s)
+    local ot={}
+    local qn=#s
+    local qi=1
+    local qj=1
+    while qi<=qn do
+      local ac=0
+      local mv=1
+      while true do
+        local bp=RV[s:byte(qi)]; qi=qi+1
+        local dg=bp%45
+        ac=ac+dg*mv
+        if bp<45 then break end
+        mv=mv*45
+      end
+      local xv
+      if ac%2==0 then xv=ac/2 else xv=-(ac+1)/2 end
+      ot[qj]=xv; qj=qj+1
+    end
+    return ot
+  end
+end"""))
+
     L.append(r("local @Q@=@@Q@@"))
     L.append(r("local @PT@={}"))
 
@@ -157,11 +195,12 @@ do
   local SH=P[6]; local IM=P[7]; local IA=P[8]
   for i=5,#@Q@ do
     local r=@Q@[i]
+    local h=r[1]
     local pr={}
-    pr.params=r[1]
-    pr.maxstack=r[3]
-    local nk=r[5]
-    local kb=r[9]
+    pr.params=h[1]
+    pr.maxstack=h[3]
+    local nk=h[5]
+    local kb=r[5]
     local bi=1
     local cst={}
     local s=(S0+i*ST)%M
@@ -196,8 +235,8 @@ do
       end
     end
     pr.kc=cst
-    local nb=r[4]
-    local kb2=r[8]
+    local nb=h[4]
+    local kb2=r[4]
     local cd={}
     s=(S0+i*ST)%M
     for z=1,nb do
@@ -205,7 +244,7 @@ do
       cd[z]=kb2[z]-(s%131072)
     end
     pr.kd=cd
-    local wu=r[7]
+    local wu=r[3]
     local kv={}
     bi=1
     for z=1,#wu do
@@ -236,22 +275,23 @@ local function @RGN@(r,q)
   local acc={}
   if r==0 then
     for i=5,#q do
-      local w=q[i][8]
+      local w=q[i][4]
       for j=1,#w do acc[#acc+1]=w[j] end
     end
   elseif r==1 then
     for i=5,#q do
-      local w=q[i][9]
+      local w=q[i][5]
       for j=1,#w do acc[#acc+1]=w[j] end
     end
   elseif r==2 then
     for i=5,#q do
       local w=q[i]
-      acc[#acc+1]=w[1]
-      acc[#acc+1]=w[2]
-      acc[#acc+1]=w[3]
-      for j=1,#w[6] do acc[#acc+1]=w[6][j] end
-      local wu=w[7]
+      local hh=w[1]
+      acc[#acc+1]=hh[1]
+      acc[#acc+1]=hh[2]
+      acc[#acc+1]=hh[3]
+      for j=1,#w[2] do acc[#acc+1]=w[2][j] end
+      local wu=w[3]
       for j=1,#wu do acc[#acc+1]=wu[j] end
     end
   else

@@ -5,6 +5,81 @@ from __future__ import annotations
 import math
 
 
+class LuaRaw(str):
+    """A pre-rendered Lua expression, emitted verbatim by :func:`lua_value`.
+
+    Wrapping a string in ``LuaRaw`` tells the renderer the text is already a
+    valid Lua expression (for example ``D"..."``) and must not be re-quoted
+    as a string literal.
+    """
+
+    __slots__ = ()
+
+
+#: Radix of the printable-string integer encoding.  Each character carries one
+#: base-``BLOB_RADIX`` digit plus a "more digits follow" continuation flag, so
+#: the alphabet holds exactly ``2 * BLOB_RADIX`` characters.
+BLOB_RADIX = 45
+
+
+def build_blob_alphabet(rng) -> str:
+    """Return a deterministic 90-character alphabet for the blob encoding.
+
+    The characters are drawn from printable ASCII, excluding the quote and
+    backslash (which would need escaping inside a Lua string literal) and
+    ``@`` (reserved by the runtime template's substitution markers).  The
+    order is shuffled by ``rng`` so each build's payload strings look
+    different while remaining reproducible for a given seed.
+    """
+    candidates = [chr(c) for c in range(33, 127) if c not in (34, 92, 64)]
+    rng.shuffle(candidates)
+    return "".join(candidates[: 2 * BLOB_RADIX])
+
+
+def can_blob(values) -> bool:
+    """Whether ``values`` can be exactly round-tripped by the blob encoding.
+
+    The encoding only carries integers whose magnitude stays below ``2**52``,
+    which keeps every decoded value exactly representable as a Lua number
+    (an IEEE-754 double).  Any float, boolean, or out-of-range integer forces
+    the caller to fall back to a plain table literal so correctness is never
+    traded for a prettier payload.
+    """
+    limit = 1 << 52
+    for v in values:
+        if isinstance(v, bool):
+            return False
+        if not isinstance(v, int):
+            return False
+        if v <= -limit or v >= limit:
+            return False
+    return True
+
+
+def encode_int_blob(values, alphabet: str) -> str:
+    """Encode a list of integers as a printable string using ``alphabet``.
+
+    Each value is zig-zag mapped to a non-negative integer (so negatives cost
+    no more than positives) and then emitted as base-``BLOB_RADIX`` digits,
+    least-significant first, with a continuation flag folded into every
+    character.  The result contains no separators and no bare numbers; it is
+    decoded by the runtime's blob decoder back into the identical integers.
+    """
+    radix = BLOB_RADIX
+    out = []
+    for x in values:
+        z = x * 2 if x >= 0 else (-x) * 2 - 1
+        while True:
+            digit = z % radix
+            z //= radix
+            if z:
+                out.append(alphabet[radix + digit])
+            else:
+                out.append(alphabet[digit])
+                break
+    return "".join(out)
+
+
 def lua_quote_string(value: str) -> str:
     """Render a Python string as a Lua 5.1 double-quoted literal.
 
@@ -57,6 +132,8 @@ def lua_number(value: float) -> str:
 
 def lua_value(value) -> str:
     """Render a Python value as a Lua expression."""
+    if isinstance(value, LuaRaw):
+        return str(value)
     if value is None:
         return "nil"
     if value is False:
