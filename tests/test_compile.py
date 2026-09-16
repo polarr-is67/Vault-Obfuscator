@@ -91,3 +91,24 @@ def test_verify_reraises_on_broken_generator():
     # wired through. Force a verification-only path.
     result = obfuscate(SIMPLE, seed=3, verify=True)
     assert result.output
+
+def test_global_env_uses_getfenv_fallback_for_luau():
+    """The global-environment capture must not read from bare ``_G``.
+
+    On Roblox/Luau ``_G`` is a separate empty table, so reading the standard
+    library and the script's globals from it fails ("attempt to index nil
+    with 'unpack'").  The runtime must prefer ``getfenv()`` and fall back to
+    ``_G`` only where getfenv is absent (Lua 5.2+, where ``_G`` is correct).
+    """
+    for target in ("lua51", "luau"):
+        for preset in PRESETS:
+            for minify in (True, False):
+                out = obfuscate(
+                    "print('hi')\n",
+                    seed=5,
+                    target=target,
+                    preset=preset,
+                    minify=minify,
+                    verify=True,
+                ).output
+                assert "(getfenv and getfenv())or _G" in out

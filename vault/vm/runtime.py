@@ -79,7 +79,14 @@ def build_runtime_source(name_map: Dict[str, str]) -> str:
         return re.sub(r"(?<!@)@([A-Za-z0-9_]+)@(?!@)", _rep, text)
 
     L: list = []
-    L.append(r("local @ENV@=_G"))
+    # Capture the *real* global environment.  On stock Lua ``_G`` is that
+    # environment, but on Roblox/Luau ``_G`` is a separate, empty shared table
+    # -- the standard library and the script's own globals live in the
+    # function environment returned by ``getfenv``.  Reading everything from
+    # ``_G`` there yields nil (e.g. ``_G.table.unpack`` -> index nil), so we
+    # prefer ``getfenv()`` when it exists and fall back to ``_G`` on Lua 5.2+
+    # (no getfenv), where ``_G`` is already correct.
+    L.append(r("local @ENV@=(getfenv and getfenv())or _G"))
     L.append(r("local @SM@=@ENV@.setmetatable"))
     L.append(r("local @GM@=@ENV@.getmetatable"))
     L.append(r("local @RG@=@ENV@.rawget"))

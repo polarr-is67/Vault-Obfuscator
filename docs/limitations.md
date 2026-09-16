@@ -38,10 +38,14 @@ ensure call sites do not pass trailing nils when the count must be exact.
 
 ## Environment and sandbox
 
-The VM captures `_G` (and `setmetatable`, `getmetatable`, `rawget`,
-`rawset`, `select`, `unpack`, `pcall`, `error`, `type`, `string.char`,
-`math.floor`) once at load time. This keeps the VM robust if globals are
-replaced later, but it also means:
+The VM captures the global environment (and `setmetatable`, `getmetatable`,
+`rawget`, `rawset`, `select`, `unpack`, `pcall`, `error`, `type`,
+`string.char`, `math.floor`) once at load time. The environment is taken from
+`getfenv()` when available and `_G` otherwise: on stock Lua `_G` *is* the
+global environment, but on Roblox/Luau `_G` is a separate, empty shared table,
+so the standard library and the script's own globals are reached through the
+function environment instead. This keeps the VM robust if globals are replaced
+later, but it also means:
 
 * Replacing those standard functions at runtime does not redirect the VM.
 * A sandbox that deliberately removes `unpack`/`select`/etc. before loading
