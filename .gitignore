@@ -7,3 +7,8 @@ __pycache__/
 dist/
 build/
 *.lua.out
+
+# Local web service state (settings, logs, pid files)
+var/
+logs/
+*.log

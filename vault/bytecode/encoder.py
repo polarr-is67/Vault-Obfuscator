@@ -22,11 +22,32 @@ from vault.utils.random import DeterministicRandom
 #: Checked-sum modulus (a prime; safe under double arithmetic).
 SUM_MOD = (1 << 31) - 1
 
-#: Position of the payload records in the runtime `Q` table: [1]=LCG params,
-#: [2]=integrity, [3]=metamethod keys, [4]=error messages, [5..]=prototypes.
+#: Version of the VM runtime + payload protocol. Baked into every build and
+#: checked at load time so a payload produced by an older/newer emitter fails
+#: cleanly instead of mis-running.
+VM_VERSION = 2
+
+#: Position of the payload records in the runtime `Q` table:
+#: [1]=LCG params, [2]=integrity, [3]=metamethod keys, [4]=error messages,
+#: [5]=build metadata (VM version / seed / secret), [6..]=prototypes.
 META_RECORD_IDX = 3
 MSG_RECORD_IDX = 4
-PROTO_RECORD_BASE = 5
+METADATA_RECORD_IDX = 5
+PROTO_RECORD_BASE = 6
+
+
+def mix_integrity_mul(m: int, secret: int) -> int:
+    """Build-specific mix of a checksum multiplier with the build secret.
+
+    Mirrored exactly by the VM's ``VER`` implementation so both sides agree.
+    """
+    v = (m + (secret % 997) + 1) % SUM_MOD
+    return 1 if v == 0 else v
+
+
+def mix_integrity_salt(s: int, secret: int) -> int:
+    """Build-specific mix of a checksum salt with the build secret."""
+    return (s + (secret % 4093)) % SUM_MOD
 
 
 @dataclass
@@ -41,6 +62,9 @@ class EncodedProto:
     upvals: List[Tuple[int, int]] = field(default_factory=list)
     code_blob: List[int] = field(default_factory=list)
     const_blob: List[int] = field(default_factory=list)
+    #: Checksum the VM can re-derive over the *decoded* instruction stream to
+    #: catch post-decode tampering of the bytecode (bytecode integrity check).
+    xsum: int = 0
 
 
 @dataclass
@@ -71,6 +95,8 @@ class EncodedPayload:
     meta_blob: List[int] = field(default_factory=list)
     msg_blob: List[int] = field(default_factory=list)
     checksums: List[int] = field(default_factory=list)
+    #: Build metadata record: [vm_version, flags, secret, xsum_mul, xsum_add].
+    metadata: List[int] = field(default_factory=list)
 
 
 def _lcg_step(s: int, a: int, c: int, m: int) -> int:
@@ -108,6 +134,12 @@ class BytecodeEncoder:
         int_mul = self._derive(3, 4093) * 2 + 1
         int_add = self._derive(0, 1024)
 
+        # Build-specific secret bonded to the payload's own LCG parameters so
+        # it can never be transplanted across builds.
+        secret = self._derive(1, 0x7FFFFFFF)
+        xsum_mul = self._derive(3, 4093) * 2 + 1
+        xsum_add = self._derive(0, 4095)
+
         payload = EncodedPayload(
             protos=[],
             params=DecodeParams(
@@ -129,8 +161,17 @@ class BytecodeEncoder:
         payload.params.chk_muls = [self._derive(3, 4095) * 2 + 1 for _ in range(nregions)]
         payload.params.chk_salts = [self._derive(0, 4095) for _ in range(nregions)]
 
+        meta_flags = self._meta_flags()
+        payload.metadata = [
+            VM_VERSION,
+            meta_flags,
+            secret,
+            xsum_mul,
+            xsum_add,
+        ]
+
         for epi, pi in enumerate(image.protos):
-            epr = self._encode_proto(pi, image, payload.params, PROTO_RECORD_BASE + epi)
+            epr = self._encode_proto(pi, image, payload.params, PROTO_RECORD_BASE + epi, payload.metadata)
             payload.protos.append(epr)
 
         payload.meta_blob = self._encode_record(
@@ -140,11 +181,30 @@ class BytecodeEncoder:
             payload.messages, payload.params, MSG_RECORD_IDX
         )
 
-        payload.checksums = self._compute_checksums(payload, payload.params)
+        payload.checksums = self._compute_checksums(payload, payload.params, payload.metadata)
         return payload
 
+    def _meta_flags(self) -> int:
+        """Opaque bitmask of hardening flags for the per-build metadata."""
+        bits = {
+            "watchdog": 1,
+            "anti_debug": 2,
+            "unexpected_hook_detection": 4,
+            "env_sanity": 8,
+            "runtime_versioning": 16,
+            "protected_vm_state": 32,
+            "vm_state_validation": 64,
+            "bytecode_integrity": 128,
+            "controlled_failures": 256,
+        }
+        flags = 0
+        for key, bit in bits.items():
+            if self.preset.get(key, False):
+                flags |= bit
+        return flags
+
     def _encode_proto(
-        self, pi, image, params: DecodeParams, record_index: int
+        self, pi, image, params: DecodeParams, record_index: int, metadata: List[int]
     ) -> EncodedProto:
         epr = EncodedProto(
             proto_id=pi.proto_id,
@@ -164,6 +224,15 @@ class BytecodeEncoder:
             delta = s % 131072
             code.append(w + delta)
         epr.code_blob = code
+
+        # Bytecode-integrity checksum over the *decoded* words: the runtime
+        # decodes ``blob[k] - (s % 131072)`` back to ``w``, so it can re-derive
+        # this exact value at runtime to catch tampering after decode.
+        xmul, xadd = metadata[3], metadata[4]
+        xsum = 0
+        for w in pi.code:
+            xsum = (xsum * xmul + w + xadd) % SUM_MOD
+        epr.xsum = xsum
 
         # constant blob encoding
         consts = []
@@ -237,7 +306,7 @@ class BytecodeEncoder:
                 meta.extend([1 if instack else 0, idx])
         return [code_all, const_all, meta]
 
-    def _compute_checksums(self, payload: EncodedPayload, params: DecodeParams) -> List[int]:
+    def _compute_checksums(self, payload: EncodedPayload, params: DecodeParams, metadata: List[int]) -> List[int]:
         regions = self._region_lists(payload)
         nregions = len(params.chk_muls)
         # Derived regions are stride-samples of existing regions, mirroring
@@ -249,10 +318,13 @@ class BytecodeEncoder:
             start = k % 2
             regions.append(base[start::stride])
         checksums = []
+        use_secret = self.preset.get("build_specific_keys", True)
+        secret = metadata[2] if use_secret else 0
         for i, region in enumerate(regions):
-            m = params.chk_muls[i]
+            m = mix_integrity_mul(params.chk_muls[i], secret) if use_secret else params.chk_muls[i]
             chk = 0
             for w in region:
                 chk = (chk * m + w) % SUM_MOD
-            checksums.append((chk + params.chk_salts[i]) % SUM_MOD)
+            salt = mix_integrity_salt(params.chk_salts[i], secret) if use_secret else params.chk_salts[i]
+            checksums.append((chk + salt) % SUM_MOD)
         return checksums

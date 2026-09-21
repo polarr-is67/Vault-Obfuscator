@@ -101,7 +101,10 @@ def _env_lua() -> str | None:
     """Resolve a Lua interpreter for end-to-end run tests.
 
     Preference: ``VAULT_LUA`` env var, then well-known interpreter names on
-    PATH. Returns ``None`` when nothing is available (tests then skip).
+    PATH.  When none is available the lupa-backed shim
+    ``tools/run_lua.py`` is used if ``lupa`` is installed in the current
+    environment.  Returns ``None`` when nothing is available (tests then
+    skip).
     """
     from_env = os.environ.get("VAULT_LUA")
     if from_env and Path(from_env).is_file():
@@ -110,7 +113,23 @@ def _env_lua() -> str | None:
         path = shutil.which(name)
         if path:
             return path
+    shim = PROJECT_ROOT / "tools" / "run_lua.py"
+    if shim.is_file():
+        try:
+            import lupa  # noqa: PLC0415
+
+            return str(shim)
+        except ImportError:
+            pass
     return None
+
+
+def _lua_cmd(interp: str) -> list:
+    """Build the argv prefix to run an interpreter (shim scripts need a
+    python prefix)."""
+    if interp.endswith((".py", ".pyw")):
+        return [sys.executable, interp]
+    return [interp]
 
 
 @pytest.fixture(scope="session")
@@ -122,7 +141,10 @@ def lua_interp():
 def run_lua():
     def _run(interp: str, path: Path, timeout: int = 60) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [interp, str(path)], capture_output=True, text=True, timeout=timeout
+            _lua_cmd(interp) + [str(path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
 
     return _run
@@ -132,7 +154,10 @@ def run_lua():
 def run_lua_source():
     def _run(interp: str, source: str, timeout: int = 60) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [interp, "-e", source], capture_output=True, text=True, timeout=timeout
+            _lua_cmd(interp) + ["-e", source],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
 
     return _run
@@ -180,7 +205,7 @@ def assert_matches_reference(run_lua_source):
             result = obfuscate(src, seed=7, target="lua51", preset=preset, verify=True)
             assert result.output, f"{preset}: empty output"
             proc = subprocess.run(
-                [interp, "-e", result.output],
+                _lua_cmd(interp) + ["-e", result.output],
                 capture_output=True,
                 text=True,
                 timeout=60,

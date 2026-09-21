@@ -66,18 +66,21 @@ def obfuscate(
     verify: bool = False,
     out_path: Optional[str] = None,
     debug: bool = False,
+    overrides: Optional[dict] = None,
 ) -> BuildResult:
     """Compile and protect ``source``.
 
     Args:
-        source:  Lua 5.1 / Luau source text.
-        seed:    deterministic build seed.
-        target:  ``"lua51"`` or ``"luau"``.
-        preset:  ``"low"``, ``"medium"`` or ``"strong"``.
-        pretty:  optional override; pretty output.
-        minify:  optional override; compact output.
-        verify:  run a post-compile well-formedness check.
+        source:   Lua 5.1 / Luau source text.
+        seed:     deterministic build seed.
+        target:   ``"lua51"`` or ``"luau"``.
+        preset:   ``"low"``, ``"medium"`` or ``"strong"``.
+        pretty:   optional override; pretty output.
+        minify:   optional override; compact output.
+        verify:   run a post-compile well-formedness check.
         out_path: optional output path; used only for diagnostics.
+        overrides: optional per-build preset overrides (e.g. ``{"dispatch":
+            "table"}``); validated against the preset schema.
 
     Returns:
         A :class:`BuildResult` with the protected script and stats.
@@ -101,9 +104,10 @@ def obfuscate(
         pretty=pretty,
         minify=minify,
         debug=debug,
+        overrides=overrides,
     )
     # capture preset config once for stats
-    cfg = get_preset(options.preset)
+    cfg = get_preset(options.preset, overrides)
     if pretty is not None:
         cfg.pretty = pretty
     if minify is not None:

@@ -27,7 +27,8 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi>=0.100", "uvicorn>=0.23", "python-multipart>=0.0.7"]
-tests = ["pytest>=7.0", "httpx>=0.24"]
+service = ["pywin32>=306; sys_platform == 'win32'"]
+tests = ["pytest>=7.0", "httpx>=0.24", "lupa>=2.0"]
 
 [project.scripts]
 vault-obf = "vault.cli:main"
@@ -35,6 +36,9 @@ vault-obf = "vault.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vault*", "web*"]
+
+[tool.setuptools.package-data]
+web = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -88,9 +88,32 @@ The medium/strong presets add:
   when the budget is exhausted the VM aborts. Long-running loops are handled
   by `watchdog_step` so the counter does not terminate legitimate programs.
 * **Integrity regions**: the output is split into regions covered by a
-  checksum; a failure to match trips an error path.
+  checksum; a failure to match trips an error path. `build_specific_keys`
+  mixes the seed-derived build secret into every checksum.
 * **Anti-debug** (strong): a trap program runs checks for common debugging
-  surfaces and aborts when suspicious.
+  surfaces and aborts when suspicious. `unexpected_hook_detection` re-checks
+  for an installed hook while the program runs (sampled by the watchdog).
+* **Environment sanity**: verifies the standard functions the VM captured
+  from the real environment at load time (`env_sanity`).
+* **Runtime versioning**: embeds build metadata (VM version, seed-derived
+  build id, flags) and aborts when the payload came from another VM revision.
+* **Protected VM state / state validation**: frame-slot locators are
+  scrambled (`protected_vm_state`) and the instruction pointer and frame
+  chain are bounds-checked while running (`vm_state_validation`).
+* **Bytecode integrity**: a decoded instruction-stream chunk is re-verified on
+  a watchdog budget (`bytecode_integrity`).
+* **Controlled failures**: every security abort is routed through a
+  build-specific sentinel so a tamper yields one clean, opaque error rather
+  than a leaky internal message (`controlled_failures`).
+
+### Dispatch strategies
+
+The opcode dispatch chain is emitted in one of three shapes (`dispatch`):
+
+* `cascade` — a flat, RNG-shuffled `if/elseif` chain (the default).
+* `tree` — a balanced binary decision tree over the permuted opcodes.
+* `table` — a per-opcode closure table built once at load time, with an
+  in-loop lookup instead of comparisons.
 
 ## Limits and notes
 

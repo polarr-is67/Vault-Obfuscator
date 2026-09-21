@@ -18,6 +18,37 @@ from vault.targets import TARGETS
 DEFAULT_LUA_NAMES = ("lua", "lua51", "lua5.1", "lua53", "lua5.3", "lua54", "lua5.4", "luau")
 
 
+def _parse_set_value(raw: str):
+    """Coerce a ``--set`` value to bool/int/float, else keep the string."""
+    low = raw.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        return raw
+
+
+def _parse_sets(items) -> dict:
+    """Parse repeated ``--set key=value`` arguments into an overrides dict."""
+    overrides: dict = {}
+    for item in items or ():
+        if "=" not in item:
+            raise VaultError(f"--set expects key=value, got '{item}'")
+        key, _, raw = item.partition("=")
+        key = key.strip()
+        if not key:
+            raise VaultError(f"--set expects a non-empty key, got '{item}'")
+        overrides[key] = _parse_set_value(raw.strip())
+    return overrides
+
+
 def find_lua(explicit: Optional[str] = None) -> Optional[str]:
     """Locate a Lua interpreter for ``--check-lua``.
 
@@ -102,6 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="obfuscation strength preset (default: low)",
     )
     parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "override a preset option for this build; repeatable "
+            "(e.g. --set dispatch=table --set controlled_failures=true)"
+        ),
+    )
+    parser.add_argument(
         "-t", "--target",
         default="lua51",
         choices=sorted(TARGETS),
@@ -163,6 +204,12 @@ def _emit_stats(result, args) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "service":
+        from vault.svc_cli import main as svc_main
+
+        return svc_main(argv[1:])
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -183,6 +230,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             minify=True if args.minify else None,
             verify=args.verify,
             debug=args.debug,
+            overrides=_parse_sets(args.set),
         )
     except VaultError as exc:
         print(exc.format(), file=sys.stderr)

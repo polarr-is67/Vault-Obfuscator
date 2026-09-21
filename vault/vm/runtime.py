@@ -13,6 +13,10 @@ upvals, kids}``.  Frames are tables:
   [5] result count[6] open upvalue cells        [7] captured cells [8] varargs
   [9] caller frame[10] result destination reg   [11] result mode
 
+The slot locators ([1]..[11] above) are addressed through the generated
+``K_P``..``K_M`` locators, which the emitter renames per build so the frame
+layout never appears in the output as conventional identifiers.
+
 A single ``while`` loop dispatches over the top frame of a frame stack:
 ``CALL`` pushes a callee frame, ``RETURN`` delivers results into the caller
 and pops.  Closures are Lua functions that launch a nested invocation of the
@@ -42,9 +46,19 @@ RUNTIME_NAMES: list = [
     "CALLF", "COLL", "COLLT", "UNPR",
     "WREG", "RETD",
     "CS", "RGN", "VER", "VERONE", "MN",
+    "MIXM",
     "WDOG", "WDOGN",
     "RUN", "MK",
     "ADBG",
+    # frame slot locators (renamed per build)
+    "KP", "KI", "KR", "KE", "KN", "KO", "KU", "KV", "KB", "KD", "KM",
+    # controlled-failure machinery
+    "SENT", "KILL",
+    # hardening helpers (generated always; used only when the matching
+    # protection is enabled)
+    "SVC", "DPL", "BXC", "HOOK",
+    # outer invocation wrapper
+    "WOK", "WA", "WB",
 ]
 
 
@@ -104,17 +118,33 @@ def build_runtime_source(name_map: Dict[str, str]) -> str:
     L.append(r("local @MKT@={}"))
     L.append(r("local @EMT@={}"))
 
-    L.append("local K_P=1")
-    L.append("local K_I=2")
-    L.append("local K_R=3")
-    L.append("local K_E=4")
-    L.append("local K_N=5")
-    L.append("local K_O=6")
-    L.append("local K_U=7")
-    L.append("local K_V=8")
-    L.append("local K_B=9")
-    L.append("local K_D=10")
-    L.append("local K_M=11")
+    # Frame-slot locators.  The emitter maps each semantic to a generated
+    # identifier (and may shuffle their numeric meaning via the protected-VM-
+    # state option), so the frame layout is not addressable by any fixed,
+    # greppable name in the emitted file.
+    L.append(r("local @KP@=1"))
+    L.append(r("local @KI@=2"))
+    L.append(r("local @KR@=3"))
+    L.append(r("local @KE@=4"))
+    L.append(r("local @KN@=5"))
+    L.append(r("local @KO@=6"))
+    L.append(r("local @KU@=7"))
+    L.append(r("local @KV@=8"))
+    L.append(r("local @KB@=9"))
+    L.append(r("local @KD@=10"))
+    L.append(r("local @KM@=11"))
+
+    # ------------------------------------------------------------------
+    # controlled-failure sentinel
+    #
+    # Every security abort (integrity, version mismatch, hook detection,
+    # state corruption) routes through @KILL@, which raises a build-specific
+    # sentinel table.  The outer invocation wrapper recognizes the sentinel
+    # and reports one clean opaque error; any other error raised by the
+    # program is passed through untouched so user-facing diagnostics survive.
+    # ------------------------------------------------------------------
+    L.append(r("local @SENT@"))
+    L.append(r("local function @KILL@() error(@SENT@) end"))
 
     # ------------------------------------------------------------------
     # payload string decoder
@@ -155,6 +185,20 @@ end"""))
 
     L.append(r("local @Q@=@@Q@@"))
     L.append(r("local @PT@={}"))
+
+    # ------------------------------------------------------------------
+    # per-build metadata / runtime versioning
+    #
+    # Q[5] carries [vm_version, flags, build_secret, xsum_mul, xsum_add].
+    # The VM refuses to run a payload produced by a different VM revision
+    # and bonds the integrity + bytecode checksums to the stored secret.
+    # ------------------------------------------------------------------
+    L.append(r("""
+do
+  local M5=@Q@[5]
+  @SENT@=@@SENTLIT@@
+  if M5[1]~=@@VMVER@@ then @@VERBODY@@ end
+end"""))
 
     # ------------------------------------------------------------------
     # decode metamethod keys, error messages and payload prototypes
@@ -200,7 +244,7 @@ do
   local P=@Q@[1]
   local A=P[1]; local C=P[2]; local M=P[3]; local S0=P[4]; local ST=P[5]
   local SH=P[6]; local IM=P[7]; local IA=P[8]
-  for i=5,#@Q@ do
+  for i=@@PBASE@@,#@Q@ do
     local r=@Q@[i]
     local h=r[1]
     local pr={}
@@ -251,6 +295,7 @@ do
       cd[z]=kb2[z]-(s%131072)
     end
     pr.kd=cd
+    pr.xs=h[6]
     local wu=r[3]
     local kv={}
     bi=1
@@ -259,7 +304,7 @@ do
       kv[z]={ii,kk}
     end
     pr.kv=kv
-    @PT@[i-4]=pr
+    @PT@[i-@@PT0@@]=pr
   end
 end"""))
 
@@ -281,17 +326,17 @@ end"""))
 local function @RGN@(r,q)
   local acc={}
   if r==0 then
-    for i=5,#q do
+    for i=@@PBASE@@,#q do
       local w=q[i][4]
       for j=1,#w do acc[#acc+1]=w[j] end
     end
   elseif r==1 then
-    for i=5,#q do
+    for i=@@PBASE@@,#q do
       local w=q[i][5]
       for j=1,#w do acc[#acc+1]=w[j] end
     end
   elseif r==2 then
-    for i=5,#q do
+    for i=@@PBASE@@,#q do
       local w=q[i]
       local hh=w[1]
       acc[#acc+1]=hh[1]
@@ -317,18 +362,25 @@ local function @RGN@(r,q)
 end"""))
 
     L.append(r("""
+local function @MIXM@(m,sec)
+  local z=(m+(sec%997)+1)%@MN@
+  if z==0 then return 1 end
+  return z
+end"""))
+
+    L.append(r("""
 local function @VER@(r,q)
   local ws=@RGN@(r,q)
   local muls=q[2][1]
   local salts=q[2][2]
   local expc=q[2][3]
-  return @CS@(ws,muls[r+1],salts[r+1])==expc[r+1]
+  return @CS@(ws,@@VERML@@,@@VERST@@)==expc[r+1]
 end"""))
 
     L.append(r("""
 local function @VERONE@(r,q)
   if not @VER@(r,q) then
-    @ER@(@EMT@[1] or 'integrity check failed')
+    @@VR1BODY@@
   end
 end"""))
 
@@ -416,9 +468,6 @@ local function @BLE@(x,y)
   return nil, false
 end"""))
 
-    # NOTE: @RP@ is substituted per-op in the emitter's dispatch table; here we
-    # keep a placeholder that the emitter replaces with the operator of the
-    # matched opcode (unused for the numeric fast path).
     L.append(r("""
 local function @CALLF@(f,t,base,n)
   if n==0 then return f() end
@@ -462,40 +511,40 @@ end"""))
   local sk = { {pr,1,{},{},0,{},upcells,{},nil,0,0} }
   local tlr, tln
   local I=sk[1]
-  local rg2=I[K_R]
-  local vr2=I[K_V]
+  local rg2=I[@KR@]
+  local vr2=I[@KV@]
   local params=pr.params
   for i=1,na do
     if i<=params then rg2[i-1]=args[i] else vr2[#vr2+1]=args[i] end
   end
   local function @WREG@(I, r, v)
-    local c0=I[K_O][r]
+    local c0=I[@KO@][r]
     if c0 then c0[1]=v end
-    I[K_R][r]=v
+    I[@KR@][r]=v
   end
   local function @RETD@(I, results, nn, sk)
-    local back=I[K_B]
-    local opn=I[K_O]
+    local back=I[@KB@]
+    local opn=I[@KO@]
     for k0,c0 in pairs(opn) do c0.regs=nil end
     sk[#sk]=nil
     if back then
-      local dm=I[K_M]
+      local dm=I[@KM@]
       if dm==1 then
-        local d2=I[K_D]
-        back[K_R][d2]=results[1]
-        local o6=back[K_O][d2]
+        local d2=I[@KD@]
+        back[@KR@][d2]=results[1]
+        local o6=back[@KO@][d2]
         if o6 then o6[1]=results[1] end
       elseif dm==2 then
-        back[K_E]=results
-        back[K_N]=nn
-        local d2=I[K_D]
+        back[@KE@]=results
+        back[@KN@]=nn
+        local d2=I[@KD@]
         if d2~=0 then
-          back[K_R][d2]=results[1]
-          local o6=back[K_O][d2]
+          back[@KR@][d2]=results[1]
+          local o6=back[@KO@][d2]
           if o6 then o6[1]=results[1] end
         end
       end
-      back[K_I]=back[K_I]+6
+      back[@KI@]=back[@KI@]+6
     else
       tlr=results
       tln=nn
@@ -503,32 +552,36 @@ end"""))
   end
   local @WDOG@=0
   local @WDOGN@=0
+  local @SVC@=0
+  @@WKHEAD@@
   while #sk>0 do
     local I=sk[#sk]
-    local pr=I[K_P]
+    local pr=I[@KP@]
     local cs=pr.kc
     local cd=pr.kd
-    local regs=I[K_R]
-    local op=cd[I[K_I]]
-    local a2=I[K_I]+1
+    local regs=I[@KR@]
+    local op=cd[I[@KI@]]
+    local a2=I[@KI@]+1
     local b2=a2+1
     local c2=b2+1
     local d2=c2+1
     local e2=d2+1
     local av=0
     @@WK@@
+    @@SV@@
     @@DISP@@
     if op==nil then @ER@(@EMT@[9]) end
-    if av==0 then I[K_I]=I[K_I]+6 end
+    if av==0 then I[@KI@]=I[@KI@]+6 end
   end
   return tlr, tln
 end"""))
 
     # ------------------------------------------------------------------
-    # load-time integrity probe + anti-debug + entry
+    # environment sanity, load-time integrity probe, anti-debug and entry
     # ------------------------------------------------------------------
+    L.append("@@ENVS@@")
     L.append("@@CKL@@")
     L.append("@@ADB@@")
-    L.append(r("@RUN@(@PT@[@@MAIN@@],{},0,{})"))
+    L.append("@@RUNSITE@@")
 
     return "\n".join(L)

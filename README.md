@@ -20,8 +20,13 @@ identical program output.
 - **Two targets**: `lua51` and a `luau` subset (annotations, compound
   assignment operators, `continue`).
 - **Three presets** (`low`, `medium`, `strong`) that scale opcode permutation,
-  constant/upvalue shuffling, load-time integrity checks, a VM watchdog and
-  anti-debug hooks.
+  constant/upvalue shuffling, load-time integrity checks, a VM watchdog,
+  anti-debug hooks and a build-specific integrity key.
+- **Layered hardening, individually switchable** via `--set key=value`:
+  environment sanity checks, runtime version sealing, protected VM state, VM
+  state validation, sampled bytecode integrity, runtime hook detection and
+  controlled (opaque) failure routing. Dispatch can be emitted as a flat
+  `cascade`, a balanced `tree`, or a per-opcode `table` lookup.
 - **Encrypted payload**: constants and instructions are scrambled by a
   seed-derived LCG and decoded inside the VM at load time. The scrambled
   numbers are not emitted as bare integer tables; each numeric array is
@@ -32,6 +37,9 @@ identical program output.
   pretty output for auditing (`--pretty`).
 - **CLI + Python API**: `vault-obf` on the command line or
   `from vault.compiler.pipeline import obfuscate` in code.
+- **Web UI + local service**: a FastAPI service with a browser editor,
+  installable as a Windows service and deployable as a static GitHub Pages
+  front end.
 
 ## Installation
 
@@ -54,7 +62,9 @@ python -m vault.cli --help
 
 To run the optional end-to-end tests against a real interpreter, install one
 of `lua5.1` / `lua5.3` / `lua5.4` / `luau` and put it on `PATH`, or set the
-`VAULT_LUA` environment variable to its path.
+`VAULT_LUA` environment variable to its path. If no interpreter is present but
+[`lupa`](https://pypi.org/project/lupa/) is installed (`pip install ".[tests]"`),
+the suite falls back to an in-process Lua runtime.
 
 ## Usage
 
@@ -68,9 +78,16 @@ vault-obf program.lua -o p.lua -p medium -s 42 --stats
 # strong preset, pretty output, then verify the result runs
 vault-obf program.lua -o p.lua -p strong --pretty --verify --check-lua
 
+# override individual protections for one build
+vault-obf program.lua -p medium --set dispatch=table --set controlled_failures=true
+
 # JSON statistics for tooling
 vault-obf program.lua -o p.lua --stats --json | jq .
 ```
+
+Any key from `vault/presets/config.py` can be passed with `--set`; values are
+coerced to booleans, integers or floats where possible. Invalid keys are
+rejected with a clear error.
 
 Run `vault-obf --help` for the full option list.
 
@@ -85,6 +102,7 @@ result = obfuscate(
     target="lua51",    # or "luau"
     preset="medium",   # low | medium | strong
     verify=True,       # re-parse output as a sanity check
+    overrides={"dispatch": "table", "controlled_failures": True},
 )
 with open("out.lua", "w", encoding="utf-8") as fh:
     fh.write(result.output)
@@ -102,19 +120,48 @@ python -m web --port 8000
 ```
 
 * `POST /obfuscate` (JSON body) returns the protected Lua script as text.
-* `POST /obfuscate.json` returns `{ "output": ..., "stats": ... }`.
+* `POST /obfuscate.json` returns `{ "output": ..., "stats": ... }`; the body
+  accepts the same fields plus an `overrides` object.
+* `GET /presets` returns preset defaults and the set of overridable options.
 * `GET /health` and `GET /` (the editor UI) are available at `http://127.0.0.1:8000`.
+
+### Windows service
+
+Install the API as a background Windows service so the UI is always available:
+
+```bash
+pip install ".[service]"        # pywin32
+vault-obf service install
+vault-obf service start
+vault-obf service status
+vault-obf service stop
+vault-obf service remove
+```
+
+Host/port can be overridden with `var/service.json` (gitignored) or the
+`VAULT_API_HOST` / `VAULT_API_PORT` environment variables. Without `pywin32`,
+`vault-obf service debug` runs the API in the foreground instead.
+
+### Static web UI
+
+`web/static/` is a dependency-free front end (drag-and-drop `.lua`/`.luau`
+loading, syntax highlighting, build stats and diagnostics, dark/light theme).
+It can be hosted anywhere and pointed at a local service with
+`?api=http://host:port`; `.github/workflows/pages.yml` publishes it to GitHub
+Pages on changes.
 
 ## Presets
 
-| preset   | opcode shuffle | proto/const shuffle | load integrity | watchdog | anti-debug | output   |
-|----------|----------------|---------------------|----------------|----------|------------|----------|
-| `low`    | yes            | const/upval         | 3 regions      | off      | off        | minified |
-| `medium` | yes            | + proto             | 4 regions      | on       | off        | minified |
-| `strong` | yes            | + proto             | 5 regions      | on       | on         | pretty   |
+| preset   | opcode shuffle | proto/const shuffle | load integrity | dispatch | runtime hardening                                              | output   |
+|----------|----------------|---------------------|----------------|----------|----------------------------------------------------------------|----------|
+| `low`    | yes            | const/upval         | 3 regions      | cascade  | none                                                           | minified |
+| `medium` | yes            | + proto             | 4 regions      | cascade  | watchdog, env sanity, version seal, protected state            | minified |
+| `strong` | yes            | + proto             | 5 regions      | tree     | + anti-debug, hook detection, state validation, bytecode verify, controlled failures | pretty   |
 
 The exact mix of protections available at each level is defined in
-`vault/presets/config.py`.
+`vault/presets/config.py`. Every field can be overridden per build with
+`--set` (CLI), the `overrides` argument (Python) or the `overrides` object
+(HTTP).
 
 ## Architecture
 
@@ -193,8 +240,9 @@ python -m pytest tests -q
 ```
 
 End-to-end semantic tests compare the VM output against the un-obfuscated
-source on a real interpreter and **skip automatically** when none is
-installed. Set `VAULT_LUA` to point at a specific binary, e.g.:
+source on a real interpreter. When no `lua` binary is on `PATH` the suite uses
+the bundled `lupa` fallback (`tools/run_lua.py`), and only skips when neither
+is available. Set `VAULT_LUA` to point at a specific binary, e.g.:
 
 ```bash
 VAULT_LUA=/usr/bin/lua5.1 python -m pytest tests -q

@@ -1,114 +1,146 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vault-Obf</title>
-<style>
-  :root { color-scheme: dark; }
-  body { font-family: ui-monospace, Consolas, monospace; margin: 2rem auto; max-width: 900px; padding: 0 1rem; background: #0f1117; color: #d6d8de; }
-  h1 { font-size: 1.4rem; color: #79c0ff; }
-  textarea { width: 100%; min-height: 10rem; background: #161b22; color: #d6d8de; border: 1px solid #30363d; border-radius: 6px; padding: .5rem; box-sizing: border-box; }
-  label { display: block; margin-top: .75rem; font-size: .85rem; color: #8b949e; }
-  input, select { background: #161b22; color: #d6d8de; border: 1px solid #30363d; border-radius: 6px; padding: .35rem .5rem; }
-  button { margin-top: 1rem; background: #238636; color: #fff; border: 0; border-radius: 6px; padding: .55rem 1.2rem; cursor: pointer; font-size: .95rem; }
-  button:hover { background: #2ea043; }
-  pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: .75rem; overflow-x: auto; max-height: 24rem; }
-  .error { color: #f85149; }
-  .row { display: flex; gap: 1rem; flex-wrap: wrap; }
-  .row > div { flex: 1; min-width: 12rem; }
-</style>
+<meta name="description" content="Vault-Obf — VM-based source obfuscator for Lua 5.1 and Luau.">
+<title>Vault-Obf — Lua VM obfuscator</title>
+<link rel="stylesheet" href="styles.css">
+<script src="config.js"></script>
+<script src="app.js" defer></script>
 </head>
 <body>
-<h1>Vault-Obf</h1>
-<p>Compile Lua 5.1 / Luau source into a self-contained VM-protected script.</p>
+<div class="wrap">
 
-<label for="src">Lua source</label>
-<textarea id="src" spellcheck="false">print("hello")
+  <header class="top">
+    <div class="brand">
+      <h1><span class="vault">Vault</span>-Obf</h1>
+      <span class="tag">VM-based Lua 5.1 / Luau obfuscator</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="status" class="pill pending"><span class="dot"></span><span class="text">checking service…</span></span>
+    <button id="refresh" class="btn icon" type="button" title="Re-check service">Refresh</button>
+    <button id="theme-toggle" class="btn icon" type="button">Light</button>
+  </header>
+
+  <div class="layout">
+    <!-- ---------------------------------------------------------------- -->
+    <main>
+      <section class="panel">
+        <h2>Source</h2>
+        <div id="dropzone" class="dropzone">
+          <textarea id="src" class="editor" spellcheck="false" placeholder="Drop a .lua or .luau file here, paste source, or pick a sample…">print("hello")
 local function fact(n)
-    if n <= 1 then return 1 end
+    if n &lt;= 1 then return 1 end
     return n * fact(n - 1)
 end
 print(fact(5))</textarea>
+          <div class="drop-hint">
+            <strong>Drop Lua / Luau file</strong>
+            <span>release to load the source</span>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="btn" for="file-input">Open file…</label>
+          <input id="file-input" type="file" accept=".lua,.luau,.txt" hidden>
+          <select id="samples" style="width:auto;">
+            <option value="">Load sample…</option>
+            <option value="hello">hello world</option>
+            <option value="fib">fibonacci</option>
+            <option value="luau">luau generics + types</option>
+          </select>
+          <span class="spacer"></span>
+          <span id="file-name" class="file-name"></span>
+        </div>
+      </section>
 
-<div class="row">
-  <div>
-    <label for="preset">Preset</label>
-    <select id="preset">
-      <option value="low">low</option>
-      <option value="medium" selected>medium</option>
-      <option value="strong">strong</option>
-    </select>
+      <section class="panel" style="margin-top:20px;">
+        <div class="output-head">
+          <h2>Protected output</h2>
+          <span class="spacer"></span>
+          <button id="copy" class="btn" type="button" disabled>Copy</button>
+          <button id="download" class="btn" type="button" disabled>Download .lua</button>
+        </div>
+        <div id="empty-output" class="empty">Run a build to see the protected script and stats.</div>
+        <div id="output-panel" style="display:none;">
+          <pre class="code"><code id="output"></code></pre>
+          <div id="stats" class="stats"></div>
+        </div>
+        <div id="diag" class="diag"></div>
+      </section>
+    </main>
+
+    <!-- ---------------------------------------------------------------- -->
+    <aside class="panel">
+      <h2>Build options</h2>
+
+      <label class="field">
+        <span class="label">Preset</span>
+        <select id="preset">
+          <option value="low">low</option>
+          <option value="medium" selected>medium</option>
+          <option value="strong">strong</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span class="label">Target</span>
+        <select id="target">
+          <option value="lua51" selected>lua51</option>
+          <option value="luau">luau</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span class="label">Seed (0 = random)</span>
+        <input id="seed" type="number" value="0" min="0">
+      </label>
+
+      <label class="field">
+        <span class="label">Format</span>
+        <select id="format">
+          <option value="minify">minify</option>
+          <option value="pretty" selected>pretty</option>
+        </select>
+      </label>
+
+      <label class="check"><input id="verify" type="checkbox"> Verify output well-formedness</label>
+      <label class="check"><input id="debug" type="checkbox"> Keep debug metadata</label>
+
+      <details class="advanced">
+        <summary>Advanced hardening</summary>
+        <p class="hint">Checked options are forced on for this build; unchecked options follow the preset.</p>
+
+        <label class="field">
+          <span class="label">Dispatch strategy</span>
+          <select id="adv-dispatch">
+            <option value="">preset default</option>
+            <option value="cascade">cascade</option>
+            <option value="tree">tree</option>
+            <option value="table">table</option>
+          </select>
+        </label>
+
+        <div class="adv-grid">
+          <label class="check"><input type="checkbox" data-override="anti_debug"> Debugger detection</label>
+          <label class="check"><input type="checkbox" data-override="unexpected_hook_detection"> Runtime hook detection</label>
+          <label class="check"><input type="checkbox" data-override="env_sanity"> Environment sanity checks</label>
+          <label class="check"><input type="checkbox" data-override="runtime_versioning"> Runtime version seal</label>
+          <label class="check"><input type="checkbox" data-override="protected_vm_state"> Protected VM state</label>
+          <label class="check"><input type="checkbox" data-override="vm_state_validation"> VM state validation</label>
+          <label class="check"><input type="checkbox" data-override="bytecode_integrity"> Bytecode integrity</label>
+          <label class="check"><input type="checkbox" data-override="controlled_failures"> Controlled failures</label>
+          <label class="check"><input type="checkbox" data-override="watchdog"> Watchdog</label>
+        </div>
+      </details>
+
+      <button id="run" class="btn primary" type="button" style="width:100%; margin-top:16px;">Obfuscate</button>
+    </aside>
   </div>
-  <div>
-    <label for="target">Target</label>
-    <select id="target">
-      <option value="lua51" selected>lua51</option>
-      <option value="luau">luau</option>
-    </select>
-  </div>
-  <div>
-    <label for="seed">Seed (0 = random)</label>
-    <input id="seed" type="number" value="0">
-  </div>
-  <div>
-    <label for="format">Format</label>
-    <select id="format">
-      <option value="minify">minify</option>
-      <option value="pretty" selected>pretty</option>
-    </select>
-  </div>
+
+  <footer class="foot">
+    Runs locally — no source leaves your machine. Point the UI at another host with <span class="mono">?api=http://host:port</span>.
+  </footer>
 </div>
-
-<div>
-  <label><input id="verify" type="checkbox"> verify output well-formedness</label>
-</div>
-
-<button onclick="run()">Obfuscate</button>
-<div id="out-wrap" style="display:none; margin-top: 1rem;">
-  <label for="out">Output</label>
-  <textarea id="out" readonly style="min-height: 12rem;"></textarea>
-  <div id="meta" style="font-size: .8rem; color: #8b949e; margin-top: .5rem;"></div>
-</div>
-<div id="err" class="error"></div>
-
-<script>
-async function run() {
-  const err = document.getElementById("err");
-  err.textContent = "";
-  const payload = {
-    source: document.getElementById("src").value,
-    preset: document.getElementById("preset").value,
-    target: document.getElementById("target").value,
-    seed: Number(document.getElementById("seed").value) || 0,
-    pretty: document.getElementById("format").value === "pretty",
-    minify: document.getElementById("format").value === "minify",
-    verify: document.getElementById("verify").checked,
-  };
-  let resp;
-  try {
-    resp = await fetch("/obfuscate.json", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    err.textContent = "network error: " + e.message;
-    return;
-  }
-  const data = await resp.json();
-  if (!resp.ok) {
-    err.textContent = data.detail || resp.statusText;
-    return;
-  }
-  document.getElementById("out").value = data.output;
-  const s = data.stats;
-  document.getElementById("meta").textContent =
-    `seed ${s.seed} | ${s.source_size} -> ${s.output_size} bytes | ` +
-    `${s.instruction_count} instr / ${s.function_count} fns / ${s.constant_count} consts | ` +
-    `${s.compile_time_ms} ms`;
-  document.getElementById("out-wrap").style.display = "block";
-}
-</script>
 </body>
 </html>

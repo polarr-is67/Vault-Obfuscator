@@ -102,17 +102,28 @@ settings:
 | Setting               | Description                                        |
 |-----------------------|----------------------------------------------------|
 | `opcode_permute`      | Shuffle instruction opcodes per build             |
-| `proto_shuffle`       | Shuffle internal function prototype order        |
-| `const_shuffle`       | Shuffle constant pool order                      |
-| `upval_shuffle`       | Shuffle upvalue descriptor order                 |
-| `integrity_regions`   | Number of protected output regions               |
-| `load_verify_regions` | Number of regions verified at startup            |
-| `watchdog`            | Execution-time watchdog                          |
-| `watchdog_threshold`  | Step limit before watchdog trips                 |
-| `anti_debug`          | Anti-debugger trap program                       |
-| `identifier_policy`   | Identifier rename strategy (low/medium/strong)   |
-| `pretty` / `minify`   | Output formatting                                |
-| `line_wrap`           | Max line width when pretty-printing              |
+| `proto_shuffle`       | Shuffle internal function prototype order         |
+| `const_shuffle`       | Shuffle constant pool order                       |
+| `upval_shuffle`       | Shuffle upvalue descriptor order                  |
+| `dispatch`            | Dispatch strategy: `cascade`, `tree` or `table`    |
+| `integrity_regions`   | Number of protected output regions                |
+| `load_verify_regions` | Number of regions verified at startup             |
+| `build_specific_keys` | Mix the build secret into every integrity checksum|
+| `watchdog`            | Execution-time watchdog                           |
+| `watchdog_threshold`  | Step limit before watchdog trips                  |
+| `anti_debug`          | Anti-debugger trap program                        |
+| `unexpected_hook_detection` | Re-check for a debug hook while running      |
+| `env_sanity`          | Verify captured standard functions at load time   |
+| `runtime_versioning`  | Seal builds to a VM revision via metadata         |
+| `protected_vm_state`  | Scramble frame-slot locators                      |
+| `vm_state_validation` | Bounds-check the instruction pointer / frame chain|
+| `bytecode_integrity`  | Re-verify decoded instruction chunks at runtime    |
+| `controlled_failures` | Route aborts through one opaque sentinel error     |
+| `identifier_policy`   | Identifier rename strategy (low/medium/strong)    |
+| `pretty` / `minify`   | Output formatting                                 |
+| `line_wrap`           | Max line width when pretty-printing               |
 
 Use `-p low`, `-p medium`, or `-p strong` via the CLI, or `preset=`
-via the Python API.
+via the Python API. Any setting can be overridden for a single build with
+`--set key=value` (CLI), `overrides={...}` (Python) or the `overrides` object
+(HTTP); unsupported keys are rejected.
