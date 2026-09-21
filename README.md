@@ -18,7 +18,7 @@ identical program output.
 - **Deterministic builds**: the same seed and source produce the identical
   output every time.
 - **Two targets**: `lua51` and a `luau` subset (annotations, compound
-  assignment operators, `continue`).
+  assignment operators, `continue`, `!=`).
 - **Three presets** (`low`, `medium`, `strong`) that scale opcode permutation,
   constant/upvalue shuffling, load-time integrity checks, a VM watchdog,
   anti-debug hooks and a build-specific integrity key.
@@ -204,11 +204,14 @@ All of Lua 5.1's grammar:
 
 Additional features accepted with `-t luau`: type annotations (safely
 discarded), compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `..=`),
-and `continue`.
+`continue` (in `while`, `repeat`, numeric `for` and generic `for` loops) and
+`!=` as an alias for `~=`. Annotations cover `local x: T`, annotated
+parameters and return types (`: (T, U) -> R`), vararg types (`...: T`),
+optional/union/intersection types and `{[K]: V}` table types.
 
 Anything outside the subset (interpolated strings, lambdas, bitwise ops,
-if-expressions, type packs, `export`/`declare`) is rejected with a clear
-error.
+if-expressions, type packs, `type`/`export`/`declare`) is rejected with a
+clear error.
 
 ## Known limitations
 

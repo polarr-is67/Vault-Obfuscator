@@ -5,13 +5,23 @@ to design around when writing source to obfuscate.
 
 ## Language subset
 
-Vault-Obf implements a Lua 5.1–compatible frontend with a small Luau
-extension (`continue`). Anything outside that subset is rejected at compile
-time with a diagnostic — nothing is silently mis-compiled:
+Vault-Obf implements a Lua 5.1–compatible frontend with a curated Luau
+extension. Anything outside that subset is rejected at compile time with a
+diagnostic — nothing is silently mis-compiled:
 
 * `goto` and labels are not supported.
-* Luau-only constructs other than `continue` are not supported in the Luau
-  target.
+* The Lua 5.1 target rejects all Luau-only syntax. The Luau target accepts:
+  * `continue` (lowered to a jump; works in `while`, `repeat`, numeric `for`
+    and generic `for` loops).
+  * `..=` concatenating compound assignment.
+  * `!=` as an alias for `~=`.
+  * Type annotations, which are parsed and discarded: `local x: T`,
+    annotated parameters and return types (`: (T, U) -> R`), vararg
+    annotations (`...: T`), optional/union/intersection types and
+    `{[K]: V}` table types.
+* Other Luau constructs are **not** supported and are reported: `type` /
+  `export type` / `declare` statements, string interpolation
+  (`` `hello {name}` ``), and `if ... then ... else ...` expressions.
 * Lua 5.2+ semantics (integer division, bitwise operators, `goto`,
   `__len`, `table.unpack` in 5.3+, etc.) are not available.
 

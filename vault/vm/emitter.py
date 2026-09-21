@@ -40,10 +40,13 @@ from vault.protection import (
     build_anti_debug,
     build_env_sanity,
     build_load_checks,
+    build_self_check,
     build_state_validation,
     build_watchdog,
     build_watchdog_head,
+    self_source_hash,
 )
+from vault.protection.selfcheck import HASH_PREFIX, HASH_SENTINEL
 from vault.protection.fail import failure_body
 from vault.transforms.identifiers import IdentifierGenerator, IdentifierPolicy
 from vault.utils.luaval import (
@@ -229,13 +232,25 @@ class VMOmitter:
         handler_for,
         lo: int,
         hi: int,
+        rng: DeterministicRandom,
     ) -> str:
         if lo == hi:
             code = codes[lo]
             return "if op==%d then\n%s\nelse\nend" % (code, handler_for(code))
-        mid = (lo + hi) // 2
-        left = self._tree_walk(n, codes, handler_for, lo, mid)
-        right = self._tree_walk(n, codes, handler_for, mid + 1, hi)
+        # Jitter the split point within the middle half so every build gets a
+        # different decision-tree shape while remaining near-balanced.
+        span = hi - lo
+        if span >= 2:
+            jitter = max(1, span // 4)
+            mid = (lo + hi) // 2 + rng.randint(-jitter, jitter)
+            if mid < lo:
+                mid = lo
+            if mid > hi - 1:
+                mid = hi - 1
+        else:
+            mid = lo
+        left = self._tree_walk(n, codes, handler_for, lo, mid, rng)
+        right = self._tree_walk(n, codes, handler_for, mid + 1, hi, rng)
         return "if op<%d then\n%s\nelse\n%s\nend" % (codes[mid + 1], left, right)
 
     def _build_dispatch(
@@ -248,7 +263,9 @@ class VMOmitter:
             return self._finalize(n, self._handler(n, name))
 
         if strategy == "tree":
-            return self._tree_walk(n, sorted(opmap), handler_for, 0, OPCODE_COUNT - 1)
+            return self._tree_walk(
+                n, sorted(opmap), handler_for, 0, OPCODE_COUNT - 1, rng
+            )
 
         if strategy == "table":
             return (
@@ -531,10 +548,13 @@ class VMOmitter:
     def _render_payload(self, payload: EncodedPayload) -> str:
         p = payload.params
         b = self._blob
+        perm = list(p.tag_perm) or list(range(8))
         q: List[object] = [
             b([
                 p.lcg_a, p.lcg_c, p.lcg_m, p.lcg_s0,
                 p.stride, p.str_shift, p.int_mul, p.int_add,
+                p.code_mul, p.code_mod, p.field_step,
+                *perm,
             ]),
             [b(p.chk_muls), b(p.chk_salts), b(payload.checksums)],
             [len(payload.meta_keys), b(payload.meta_blob)],
@@ -587,6 +607,41 @@ class VMOmitter:
             ) * 4,
         }
 
+    def _decoys(self, gen: IdentifierGenerator, rng: DeterministicRandom, cfg: dict) -> str:
+        """Build build-random unused locals/functions.
+
+        The definitions are never called; they exist so the size and shape of
+        the emitted script do not track the source's own structure.  Names come
+        from the shared identifier generator so they blend with the runtime's
+        generated identifiers and cannot collide.
+        """
+        max_n = int(cfg.get("decoy_helpers", 0))
+        if max_n <= 0:
+            return ""
+        count = rng.randint(0, max_n)
+        parts: List[str] = []
+        ops = ("+", "-", "*", "%")
+        for _ in range(count):
+            name = gen.next()
+            k1 = rng.randint(1, 4096)
+            k2 = rng.randint(1, 32)
+            k3 = rng.randint(0, 8192)
+            op = rng.choice(ops)
+            parts.append(
+                "local function %s()\n"
+                "  local s=%d\n"
+                "  for i=1,%d do s=s%si end\n"
+                "  if s>%d then return s end\n"
+                "  return -s\n"
+                "end" % (name, k1, k2, op, k3)
+            )
+            if rng.randint(0, 1):
+                sname = gen.next()
+                slen = rng.randint(3, 28)
+                sval = "".join(chr(rng.randint(97, 122)) for _ in range(slen))
+                parts.append('local %s="%s"' % (sname, sval))
+        return "\n".join(parts)
+
     def _run_site(self, n: Dict[str, str], cfg: dict) -> str:
         """The invocation at the very end of the script."""
         call = f"{n['RUN']}({n['PT']}[@@MAIN@@],{{}},0,{{}})"
@@ -622,6 +677,7 @@ class VMOmitter:
         self._cfg = cfg
         self._strategy = cfg.get("dispatch", "cascade")
         policy = IdentifierGenerator.policy_for(str(cfg.get("identifier_policy", "medium")))
+        cfg["seed"] = int(payload.params.seed)
         meta = self._meta(cfg, payload)
 
         # Build a probe of every Lua identifier that will appear in the
@@ -645,6 +701,7 @@ class VMOmitter:
             build_anti_debug(stub_map, cfg),
             build_state_validation(stub_map, cfg, meta),
             build_env_sanity(stub_map, cfg),
+            build_self_check(stub_map, cfg),
             self._run_site(stub_map, cfg),
         ])
         reserved = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", probe_parts))
@@ -653,6 +710,7 @@ class VMOmitter:
         name_map: Dict[str, str] = {}
         for semantic in RUNTIME_NAMES:
             name_map[semantic] = gen.next(semantic)
+        decoys = self._decoys(gen, rng, cfg)
 
         builder = VMRuntimeBuilder(cfg)
         runtime = builder.build(name_map)
@@ -669,6 +727,7 @@ class VMOmitter:
         adb = build_anti_debug(name_map, cfg)
         sv = build_state_validation(name_map, cfg, meta)
         envs = build_env_sanity(name_map, cfg)
+        selfcheck = build_self_check(name_map, cfg)
 
         # Derive the payload-string alphabet from a dedicated seed stream so
         # its ordering is stable regardless of how much entropy the dispatch
@@ -684,6 +743,7 @@ class VMOmitter:
         secret = payload.metadata[2]
 
         out = runtime
+        out = out.replace("@@DECOYS@@", decoys)
         out = out.replace("@@ALPHA@@", lua_quote_string(self._alphabet))
         out = out.replace("@@Q@@", q)
         out = out.replace("@@DISP@@", dispatch)
@@ -692,6 +752,8 @@ class VMOmitter:
         out = out.replace("@@SV@@", sv)
         out = out.replace("@@ENVS@@", envs)
         out = out.replace("@@CKL@@", load_checks)
+        out = out.replace("@@SELFCHK@@", selfcheck)
+        out = out.replace("@@SELFHASH@@", lua_quote_string(HASH_SENTINEL))
         out = out.replace("@@ADB@@", adb)
         out = out.replace("@@PBASE@@", str(PROTO_RECORD_BASE))
         out = out.replace("@@PT0@@", str(PROTO_RECORD_BASE - 1))
@@ -709,6 +771,13 @@ class VMOmitter:
 
         if preset.minify:
             out = minify_lua(out)
+
+        if cfg.get("self_file_check", False):
+            digest = self_source_hash(out)
+            out = out.replace(
+                lua_quote_string(HASH_SENTINEL),
+                lua_quote_string(HASH_PREFIX + digest),
+            )
         return out
 
 

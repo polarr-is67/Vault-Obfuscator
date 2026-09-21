@@ -33,6 +33,8 @@ def build_state_validation(name_map: Dict[str, str], preset_config, meta=None) -
         f"if {n['SVC']}>={thr} then\n"
         f"  {n['SVC']}=0\n"
         f"  if I[{n['KI']}]<1 or I[{n['KI']}]>#cd then {body} end\n"
+        f"  if #cd~=pr.nb then {body} end\n"
+        f"  if pr.params<0 or pr.maxstack<1 then {body} end\n"
         f"  if sk[#sk]~=I then {body} end\n"
         "end"
     )

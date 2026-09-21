@@ -35,27 +35,26 @@ def build_watchdog_head(name_map: Dict[str, str], preset_config, meta=None) -> s
         xmul = int(meta.get("xsum_mul", 3))
         xadd = int(meta.get("xsum_add", 1))
         body = failure_body(n, preset_config)
+        # NOTE: no `do ... end` wrapper here.  The watchdog body (`@@WK@@`)
+        # calls this function later in the same `@RUN@` scope, so it must be
+        # a directly visible local, not a block-scoped one.
         parts.append(
-            "do\n"
             f"local function {n['BXC']}(cd2,xs)\n"
             f"  local c=0\n"
             f"  for i2=1,#cd2 do c=(c*{xmul}+cd2[i2]+{xadd})%{n['MN']} end\n"
             f"  if c~=xs then {body} end\n"
-            "end\n"
             "end"
         )
 
     if preset_config.get("unexpected_hook_detection", False):
         body = failure_body(n, preset_config)
         parts.append(
-            "do\n"
             f"local function {n['HOOK']}()\n"
             f"  local dbx={n['ENV']}.debug\n"
             "  if dbx and dbx.gethook then\n"
             f"    local a1,b1={n['PC']}(dbx.gethook)\n"
             f"    if a1 and {n['TY']}(b1)=='function' then {body} end\n"
             "  end\n"
-            "end\n"
             "end"
         )
 

@@ -251,7 +251,7 @@ class Lexer:
         if c == "x":
             hex_digits = ""
             for _ in range(2):
-                if self._peek() in "0123456789abcdefABCDEF":
+                if self._peek() and self._peek() in "0123456789abcdefABCDEF":
                     hex_digits += self._advance()
                 else:
                     break
@@ -294,7 +294,7 @@ class Lexer:
             self._advance()
             self._advance()
             digits = []
-            while self._peek() in "0123456789abcdefABCDEF":
+            while self.pos < self.n and self._peek() in "0123456789abcdefABCDEF":
                 digits.append(self._advance())
             hexes = "".join(digits)
             if not hexes:

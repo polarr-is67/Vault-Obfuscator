@@ -41,9 +41,14 @@ RUNTIME_NAMES: list = [
     "Q",
     "PT",
     "RDK",
+    "DKC",
+    # decode configuration shared by the record/constant decoders
+    "PM", "SH", "IM", "IA", "CMUL", "CMOD", "FST", "TR",
     "NUM", "TRYM", "BADD", "BSUB", "BMUL", "BDIV", "BMOD", "BPOW",
     "BNEG", "BCC", "BLEN", "BEQ", "BLT", "BLE",
     "CALLF", "COLL", "COLLT", "UNPR",
+    # non-linear interpreter: separate instruction-execution stage
+    "EXEC",
     "WREG", "RETD",
     "CS", "RGN", "VER", "VERONE", "MN",
     "MIXM",
@@ -54,6 +59,8 @@ RUNTIME_NAMES: list = [
     "KP", "KI", "KR", "KE", "KN", "KO", "KU", "KV", "KB", "KD", "KM",
     # controlled-failure machinery
     "SENT", "KILL",
+    # self-source hash literal (used only when self_file_check is enabled)
+    "SHP",
     # hardening helpers (generated always; used only when the matching
     # protection is enabled)
     "SVC", "DPL", "BXC", "HOOK",
@@ -78,11 +85,139 @@ class VMRuntimeBuilder:
 
     def build(self, name_map) -> str:
         """Render the runtime source with identifiers from ``name_map``."""
-        return build_runtime_source(name_map)
+        return build_runtime_source(name_map, self.preset_config)
 
 
-def build_runtime_source(name_map: Dict[str, str]) -> str:
-    """Render the runtime Lua source with identifiers substituted."""
+#: Shared interpreter preamble: frame setup, register writes, return delivery
+#: and the watchdog/state counters.  Both interpreter variants share it so the
+#: two forms differ only in how fetch and dispatch are organised.
+_RUN_HEAD = """
+@RUN@=function(pr, args, na, upcells)
+  local sk = { {pr,1,{},{},0,{},upcells,{},nil,0,0} }
+  local tlr, tln
+  local I=sk[1]
+  local rg2=I[@KR@]
+  local vr2=I[@KV@]
+  local params=pr.params
+  for i=1,na do
+    if i<=params then rg2[i-1]=args[i] else vr2[#vr2+1]=args[i] end
+  end
+  local function @WREG@(I, r, v)
+    local c0=I[@KO@][r]
+    if c0 then c0[1]=v end
+    I[@KR@][r]=v
+  end
+  local function @RETD@(I, results, nn, sk)
+    local back=I[@KB@]
+    local opn=I[@KO@]
+    for k0,c0 in pairs(opn) do c0.regs=nil end
+    sk[#sk]=nil
+    if back then
+      local dm=I[@KM@]
+      if dm==1 then
+        local d2=I[@KD@]
+        back[@KR@][d2]=results[1]
+        local o6=back[@KO@][d2]
+        if o6 then o6[1]=results[1] end
+      elseif dm==2 then
+        back[@KE@]=results
+        back[@KN@]=nn
+        local d2=I[@KD@]
+        if d2~=0 then
+          back[@KR@][d2]=results[1]
+          local o6=back[@KO@][d2]
+          if o6 then o6[1]=results[1] end
+        end
+      end
+      back[@KI@]=back[@KI@]+6
+    else
+      tlr=results
+      tln=nn
+    end
+  end
+  local @WDOG@=0
+  local @WDOGN@=0
+  local @SVC@=0
+  @@WKHEAD@@
+"""
+
+#: Classic single-loop interpreter: fetch, decode, dispatch and execute all
+#: live in one `while` body.
+_RUN_LINEAR = """
+  while #sk>0 do
+    local I=sk[#sk]
+    local pr=I[@KP@]
+    local cs=pr.kc
+    local cd=pr.kd
+    local regs=I[@KR@]
+    local op=cd[I[@KI@]]
+    local a2=I[@KI@]+1
+    local b2=a2+1
+    local c2=b2+1
+    local d2=c2+1
+    local e2=d2+1
+    local av=0
+    @@WK@@
+    @@SV@@
+    @@DISP@@
+    if op==nil then @ER@(@EMT@[9]) end
+    if av==0 then I[@KI@]=I[@KI@]+6 end
+  end
+  return tlr, tln
+end
+"""
+
+#: Non-linear interpreter: frame fetch and instruction execution are separate
+#: functions and the loop only sequences them.  The dispatch surface an
+#: analyst reads is no longer a single contiguous fetch/switch/advance block.
+_RUN_SPLIT = """
+  local function @EXEC@(I,pr,cd,cs,regs,op)
+    local a2=I[@KI@]+1
+    local b2=a2+1
+    local c2=b2+1
+    local d2=c2+1
+    local e2=d2+1
+    local av=0
+    @@WK@@
+    @@SV@@
+    @@DISP@@
+    return av
+  end
+  while #sk>0 do
+    local I=sk[#sk]
+    local pr=I[@KP@]
+    local cs=pr.kc
+    local cd=pr.kd
+    local regs=I[@KR@]
+    local op=cd[I[@KI@]]
+    if op==nil then @ER@(@EMT@[9]) end
+    if @EXEC@(I,pr,cd,cs,regs,op)==0 then I[@KI@]=I[@KI@]+6 end
+  end
+  return tlr, tln
+end
+"""
+
+
+def _interpreter_source(r, nonlinear: bool) -> str:
+    """Render the interpreter, choosing the linear or split variant."""
+    body = _RUN_SPLIT if nonlinear else _RUN_LINEAR
+    return r(_RUN_HEAD + body)
+
+
+def build_runtime_source(name_map: Dict[str, str], preset_config=None) -> str:
+    """Render the runtime Lua source with identifiers substituted.
+
+    ``preset_config`` selects structural variants of the interpreter (for
+    example the non-linear fetch/execute split); it may be a plain mapping or
+    a :class:`~vault.presets.config.PresetConfig`.
+    """
+
+    def _cfg(key: str, default=False):
+        if preset_config is None:
+            return default
+        if isinstance(preset_config, dict):
+            return preset_config.get(key, default)
+        return getattr(preset_config, key, default)
 
     import re
 
@@ -187,6 +322,25 @@ end"""))
     L.append(r("local @PT@={}"))
 
     # ------------------------------------------------------------------
+    # decode configuration
+    #
+    # Q[1] is the decode-parameter record.  Besides the LCG and constant
+    # codec fields it now carries the instruction-word encoding (multiplier,
+    # modulus, per-field step) and a per-build permutation of the eight
+    # constant/record type tags.  The inverse tag map is reconstructed once
+    # here so the blob's bytes never expose the canonical tag numbering.
+    # ------------------------------------------------------------------
+    L.append(r("local @PM@=@Q@[1]"))
+    L.append(r("local @SH@=@PM@[6]"))
+    L.append(r("local @IM@=@PM@[7]"))
+    L.append(r("local @IA@=@PM@[8]"))
+    L.append(r("local @CMUL@=@PM@[9]"))
+    L.append(r("local @CMOD@=@PM@[10]"))
+    L.append(r("local @FST@=@PM@[11]"))
+    L.append(r("local @TR@={}"))
+    L.append(r("for i=1,8 do @TR@[@PM@[11+i]]=i-1 end"))
+
+    # ------------------------------------------------------------------
     # per-build metadata / runtime versioning
     #
     # Q[5] carries [vm_version, flags, build_secret, xsum_mul, xsum_add].
@@ -205,9 +359,8 @@ end"""))
     # ------------------------------------------------------------------
     L.append(r("""
 local function @RDK@(q, idx)
-  local P=q[1]
+  local P=@PM@
   local A=P[1]; local C=P[2]; local M=P[3]; local S0=P[4]; local ST=P[5]
-  local SH=P[6]
   local B=q[idx][2]
   local cnt=q[idx][1]
   local s=(S0+idx*ST)%M
@@ -215,12 +368,12 @@ local function @RDK@(q, idx)
   local bi=1
   for z=1,cnt do
     s=(s*A+C)%M
-    local tg=B[bi]; bi=bi+1
+    local tg=@TR@[B[bi]]; bi=bi+1
     if tg==5 then
       local L2=B[bi]; bi=bi+1
       local str=''
       for u=1,L2 do
-        str=str..@CHR@((B[bi]+SH)%256)
+        str=str..@CHR@((B[bi]+@SH@)%256)
         bi=bi+1
       end
       t[z]=str
@@ -235,15 +388,43 @@ local function @RDK@(q, idx)
   return t
 end"""))
 
+    # ------------------------------------------------------------------
+    # dedicated constant decoder
+    #
+    # Splitting constant decoding out of the record decoder means there is
+    # no single obvious "decode everything" routine: record tags, string
+    # shifts and integer arithmetic are all resolved here under the build's
+    # own tag permutation and codec constants.
+    # ------------------------------------------------------------------
+    L.append(r("""
+local function @DKC@(kb, bi)
+  local tg=@TR@[kb[bi]]; bi=bi+1
+  if tg==0 then return nil, bi end
+  if tg==1 then return false, bi end
+  if tg==2 then return true, bi end
+  if tg==3 then local v=kb[bi]; bi=bi+1; return (v-@IA@)/@IM@, bi end
+  if tg==5 then
+    local L2=kb[bi]; bi=bi+1
+    local str=''
+    for u=1,L2 do
+      str=str..@CHR@((kb[bi]+@SH@)%256)
+      bi=bi+1
+    end
+    return str, bi
+  end
+  if tg==6 then local num=kb[bi]; local den=kb[bi+1]; bi=bi+2; return num/den, bi end
+  if tg==7 then local v=kb[bi]; bi=bi+1; return v, bi end
+  return nil, bi
+end"""))
+
     L.append(r("""
 do
   local t1=@RDK@(@Q@,3)
   for i=1,#t1 do @MKT@[i]=t1[i] end
   local t2=@RDK@(@Q@,4)
   for i=1,#t2 do @EMT@[i]=t2[i] end
-  local P=@Q@[1]
+  local P=@PM@
   local A=P[1]; local C=P[2]; local M=P[3]; local S0=P[4]; local ST=P[5]
-  local SH=P[6]; local IM=P[7]; local IA=P[8]
   for i=@@PBASE@@,#@Q@ do
     local r=@Q@[i]
     local h=r[1]
@@ -257,44 +438,32 @@ do
     local s=(S0+i*ST)%M
     for z=1,nk do
       s=(s*A+C)%M
-      local tg=kb[bi]; bi=bi+1
-      if tg==0 then
-        cst[z]=nil
-      elseif tg==1 then
-        cst[z]=false
-      elseif tg==2 then
-        cst[z]=true
-      elseif tg==3 then
-        local v=kb[bi]; bi=bi+1
-        cst[z]=(v-IA)/IM
-      elseif tg==5 then
-        local L2=kb[bi]; bi=bi+1
-        local str=''
-        for u=1,L2 do
-          str=str..@CHR@((kb[bi]+SH)%256)
-          bi=bi+1
-        end
-        cst[z]=str
-      elseif tg==6 then
-        local num=kb[bi]; bi=bi+1
-        local den=kb[bi]; bi=bi+1
-        cst[z]=num/den
-      elseif tg==7 then
-        cst[z]=kb[bi]; bi=bi+1
-      else
-        cst[z]=nil
-      end
+      local v
+      v,bi=@DKC@(kb,bi)
+      cst[z]=v
     end
     pr.kc=cst
     local nb=h[4]
     local kb2=r[4]
     local cd={}
     s=(S0+i*ST)%M
-    for z=1,nb do
+    local wi=1
+    while wi<=nb do
       s=(s*A+C)%M
-      cd[z]=kb2[z]-(s%131072)
+      local dlt=((s*@CMUL@)%M)%@CMOD@
+      local lst=wi+5
+      if lst>nb then lst=nb end
+      local z=wi
+      while z<=lst do
+        cd[z]=kb2[z]-dlt
+        dlt=(dlt+@FST@)%@CMOD@
+        z=z+1
+      end
+      wi=wi+6
     end
     pr.kd=cd
+    pr.nk=nk
+    pr.nb=nb
     pr.xs=h[6]
     local wu=r[3]
     local kv={}
@@ -506,81 +675,15 @@ end"""))
     # ------------------------------------------------------------------
     # the interpreter
     # ------------------------------------------------------------------
-    L.append(r("""
-@RUN@=function(pr, args, na, upcells)
-  local sk = { {pr,1,{},{},0,{},upcells,{},nil,0,0} }
-  local tlr, tln
-  local I=sk[1]
-  local rg2=I[@KR@]
-  local vr2=I[@KV@]
-  local params=pr.params
-  for i=1,na do
-    if i<=params then rg2[i-1]=args[i] else vr2[#vr2+1]=args[i] end
-  end
-  local function @WREG@(I, r, v)
-    local c0=I[@KO@][r]
-    if c0 then c0[1]=v end
-    I[@KR@][r]=v
-  end
-  local function @RETD@(I, results, nn, sk)
-    local back=I[@KB@]
-    local opn=I[@KO@]
-    for k0,c0 in pairs(opn) do c0.regs=nil end
-    sk[#sk]=nil
-    if back then
-      local dm=I[@KM@]
-      if dm==1 then
-        local d2=I[@KD@]
-        back[@KR@][d2]=results[1]
-        local o6=back[@KO@][d2]
-        if o6 then o6[1]=results[1] end
-      elseif dm==2 then
-        back[@KE@]=results
-        back[@KN@]=nn
-        local d2=I[@KD@]
-        if d2~=0 then
-          back[@KR@][d2]=results[1]
-          local o6=back[@KO@][d2]
-          if o6 then o6[1]=results[1] end
-        end
-      end
-      back[@KI@]=back[@KI@]+6
-    else
-      tlr=results
-      tln=nn
-    end
-  end
-  local @WDOG@=0
-  local @WDOGN@=0
-  local @SVC@=0
-  @@WKHEAD@@
-  while #sk>0 do
-    local I=sk[#sk]
-    local pr=I[@KP@]
-    local cs=pr.kc
-    local cd=pr.kd
-    local regs=I[@KR@]
-    local op=cd[I[@KI@]]
-    local a2=I[@KI@]+1
-    local b2=a2+1
-    local c2=b2+1
-    local d2=c2+1
-    local e2=d2+1
-    local av=0
-    @@WK@@
-    @@SV@@
-    @@DISP@@
-    if op==nil then @ER@(@EMT@[9]) end
-    if av==0 then I[@KI@]=I[@KI@]+6 end
-  end
-  return tlr, tln
-end"""))
+    L.append(_interpreter_source(r, _cfg("nonlinear_vm", False)))
 
     # ------------------------------------------------------------------
     # environment sanity, load-time integrity probe, anti-debug and entry
     # ------------------------------------------------------------------
+    L.append("@@DECOYS@@")
     L.append("@@ENVS@@")
     L.append("@@CKL@@")
+    L.append("@@SELFCHK@@")
     L.append("@@ADB@@")
     L.append("@@RUNSITE@@")
 

@@ -81,7 +81,53 @@ class BytecodeGenerator:
             image.protos.append(pim)
         # protos must be sorted by new_id
         image.protos.sort(key=lambda p: p.proto_id)
+
+        # Decoy prototypes: unused, valid records appended after the real
+        # ones.  They are never referenced by any CLOSURE, so they cost
+        # nothing at run time, but they decorrelate the payload size from the
+        # number of functions in the source and dilute the prototype table's
+        # shape.  The count and contents are build-random.
+        max_decoys = int(self.preset.get("decoy_protos", 0)) if self.preset else 0
+        if max_decoys > 0:
+            next_id = max((p.proto_id for p in image.protos), default=-1) + 1
+            for _ in range(self.rng.randint(0, max_decoys)):
+                image.protos.append(self._make_decoy(next_id, image))
+                next_id += 1
         return image
+
+    def _make_decoy(self, proto_id: int, image: BytecodeImage) -> ProtoImage:
+        """Build one unused but structurally valid decoy prototype."""
+        nop = image.opmap[OPCODE_NAMES["NOP"]]
+        ret = image.opmap[OPCODE_NAMES["RETURN"]]
+        code: List[int] = []
+        for _ in range(self.rng.randint(1, 5)):
+            if self.rng.randint(0, 1):
+                code.extend([nop, 0, 0, 0, 0, 0])
+            else:
+                code.extend([ret, 0, self.rng.randint(0, 4), 0, 0, 0])
+        consts: List[object] = []
+        for _ in range(self.rng.randint(0, 3)):
+            kind = self.rng.randint(0, 3)
+            if kind == 0:
+                consts.append(self.rng.randint(-64, 4096))
+            elif kind == 1:
+                consts.append(self.rng.randint(0, 1) == 1)
+            elif kind == 2:
+                consts.append(self.rng.randint(0, 999) / 4.0)
+            else:
+                consts.append("".join(
+                    chr(self.rng.randint(97, 122)) for _ in range(self.rng.randint(1, 6))
+                ))
+        return ProtoImage(
+            proto_id=proto_id,
+            params=self.rng.randint(0, 3),
+            is_vararg=False,
+            maxstack=self.rng.randint(2, 8),
+            constants=consts,
+            code=code,
+            children=[],
+            upvals=[],
+        )
 
     def _emit_proto(self, proto: IRProto, image: BytecodeImage) -> ProtoImage:
         new_id = image.protomap[proto.proto_id]

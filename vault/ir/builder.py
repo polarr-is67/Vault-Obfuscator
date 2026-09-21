@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from vault import IRLoweringError
+from vault import IRLoweringError, SourceLocation
 from vault.ast.nodes import (
     Node,
     Literal,
@@ -321,7 +321,10 @@ class IRBuilder:
     # ------------------------------------------------------------------
 
     def _err(self, message: str, node: Optional[Node]) -> IRLoweringError:
-        loc = node.loc if node is not None and node.loc else (0, 0)
+        if node is not None and node.loc:
+            loc = SourceLocation(node.loc[0], node.loc[1])
+        else:
+            loc = SourceLocation(0, 0)
         return IRLoweringError(message, loc)
 
     def _const(self, ctx: _FuncCtx, value: object) -> int:
@@ -590,11 +593,7 @@ class IRBuilder:
             self._emit_load(r, ref, ctx)
             return r
         if isinstance(node, Paren):
-            if not single and self._is_multivalue(node.expr):
-                raise self._err(
-                    "internal: parentheses do not expand to multiple values.",
-                    node,
-                )
+            # Parentheses always yield exactly one value (Lua 5.1 truncation).
             return self._eval_expr(node.expr, ctx, single=True)
         if isinstance(node, Vararg):
             if single:

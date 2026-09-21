@@ -47,9 +47,14 @@ The **frontend** consists of a hand-written recursive-descent lexer
 (`parser.py`) that produce an AST defined in `vault/ast/nodes.py`.
 
 Target-specific validation runs during parsing:
-* Lua 5.1 rejects `continue` (a Luau extension).
-* Luau accepts `continue` but rejects Lua 5.1–style numeric-for step syntax
-  when ambiguous.
+* The Lua 5.1 target rejects Luau-only syntax (`continue`, `..=`, `!=` and
+  type annotations) with a diagnostic.
+* The Luau target accepts `continue` (lowered to a jump by the IR builder),
+  the `..=` concatenating compound assignment, `!=` as an alias for `~=`,
+  and Luau type annotations (`local x: T`, `: (T, U) -> R`, `...: T`, `T?`,
+  union/intersection and `{[K]: V}` types), which are skipped before lowering.
+  Parenthesised expressions are preserved so `(f())` still truncates to a
+  single value.
 
 ## AST → IR
 

@@ -24,9 +24,23 @@ class PresetConfig:
     proto_shuffle: bool = False
     const_shuffle: bool = True
     upval_shuffle: bool = True
+    # Instruction-word encoding layers: 1 = one shared per-instruction delta
+    # (classic additive), 2 = a distinct delta per operand word, which breaks
+    # the "six words share an offset" signature.  Both variants are further
+    # diversified per build by a random multiplier and modulus.
+    encoding_layers: int = 1
+    # Upper bound on build-random decoy prototypes appended (unused) to the
+    # payload so its size does not track the source's function count.
+    decoy_protos: int = 0
+    # Upper bound on build-random unused helper functions/constants emitted
+    # into the script text so its size does not track the source's structure.
+    decoy_helpers: int = 0
 
     # dispatch
     dispatch: str = "cascade"  # "cascade" | "tree" | "table"
+    # Split frame fetch from instruction execution so the interpreter is not
+    # a single contiguous fetch/decode/switch/execute loop.
+    nonlinear_vm: bool = False
 
     # integrity
     integrity_regions: int = 3
@@ -59,6 +73,14 @@ class PresetConfig:
     # Route every security abort through a build-specific sentinel so a tamper
     # produces one clean, opaque error instead of a leaky internal message.
     controlled_failures: bool = False
+    # Guard every security abort with a build-specific always-true predicate so
+    # the abort branch cannot be located and excised by a constant-naive
+    # deobfuscator.
+    opaque_predicates: bool = False
+    # Best-effort verification of the script's own on-disk source (FNV-style
+    # hash) when the host exposes file IO and debug info; silently skipped
+    # everywhere else (Roblox/Luau, loadstring, stdin).
+    self_file_check: bool = False
 
     # identifiers
     identifier_policy: str = "low"  # -> IdentifierGenerator.policy_for
@@ -76,10 +98,14 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "proto_shuffle": False,
         "const_shuffle": True,
         "upval_shuffle": True,
+        "encoding_layers": 1,
+        "decoy_protos": 2,
+        "decoy_helpers": 3,
         "integrity_regions": 3,
         "load_verify_regions": 3,
         "build_specific_keys": True,
         "dispatch": "cascade",
+        "nonlinear_vm": False,
         "watchdog": False,
         "watchdog_threshold": 0,
         "anti_debug": False,
@@ -90,6 +116,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "vm_state_validation": False,
         "bytecode_integrity": False,
         "controlled_failures": False,
+        "opaque_predicates": False,
+        "self_file_check": False,
         "identifier_policy": "low",
         "pretty": False,
         "minify": True,
@@ -100,10 +128,14 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "proto_shuffle": True,
         "const_shuffle": True,
         "upval_shuffle": True,
+        "encoding_layers": 2,
+        "decoy_protos": 4,
+        "decoy_helpers": 5,
         "integrity_regions": 4,
         "load_verify_regions": 4,
         "build_specific_keys": True,
         "dispatch": "cascade",
+        "nonlinear_vm": True,
         "watchdog": True,
         "watchdog_threshold": 750,
         "watchdog_step": 3,
@@ -115,6 +147,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "vm_state_validation": False,
         "bytecode_integrity": False,
         "controlled_failures": False,
+        "opaque_predicates": True,
+        "self_file_check": False,
         "identifier_policy": "medium",
         "pretty": False,
         "minify": True,
@@ -125,10 +159,14 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "proto_shuffle": True,
         "const_shuffle": True,
         "upval_shuffle": True,
+        "encoding_layers": 2,
+        "decoy_protos": 6,
+        "decoy_helpers": 8,
         "integrity_regions": 5,
         "load_verify_regions": 5,
         "build_specific_keys": True,
         "dispatch": "tree",
+        "nonlinear_vm": True,
         "watchdog": True,
         "watchdog_threshold": 220,
         "watchdog_step": 3,
@@ -140,6 +178,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "vm_state_validation": True,
         "bytecode_integrity": True,
         "controlled_failures": True,
+        "opaque_predicates": True,
+        "self_file_check": True,
         "identifier_policy": "strong",
         "pretty": True,
         "minify": False,

@@ -23,6 +23,7 @@ from vault.ast.nodes import (
     UnaryOp,
     Call,
     MethodCall,
+    Paren,
     Index,
     Field,
     FunctionDef,
@@ -55,6 +56,7 @@ BINOP_PRECEDENCE = {
     "<=": 3,
     ">=": 3,
     "~=": 3,
+    "!=": 3,
     "==": 3,
     "|": 4,
     "~": 4,
@@ -224,7 +226,13 @@ class Parser:
             return Break(loc=self._loc(tok))
         if k == "return":
             return self._parse_return_stmt()
-        if k == "continue":
+        if k == "continue" or (
+            self._luau_only()
+            and k == "ident"
+            and tok.value == "continue"
+            and self._peek(1).kind
+            not in ("=", "(", ".", "[", ":", ",", "{", "string", "long-string")
+        ):
             if not self._luau_only():
                 self._reject_luau_syntax(
                     "`continue` statement",
@@ -354,16 +362,16 @@ class Parser:
         depth = 0
         while True:
             k = self._peek().kind
-            if depth == 0 and (k in ("=", ",", ")", "do", "then", "eof", "end", ";")):
+            if k == "eof":
                 break
-            if k == "{":
+            if depth == 0 and k in ("=", ",", ")", "do", "then", "end", ";", "}"):
+                break
+            if k in ("(", "{", "[", "<"):
                 depth += 1
-            elif k == "}":
-                depth -= 1
-                if depth < 0:
+            elif k in (")", "}", "]", ">"):
+                if depth == 0:
                     break
-            elif k == "eof":
-                break
+                depth -= 1
             self._advance()
 
     def _parse_assignment_or_call(self) -> Node:
@@ -447,6 +455,14 @@ class Parser:
                 if self._check("..."):
                     self._advance()
                     is_vararg = True
+                    if self._check(":"):
+                        if not self._luau_only():
+                            self._reject_luau_syntax(
+                                "type annotations (`function(...: T)`)",
+                                "remove the annotation or target Luau.",
+                            )
+                        self._advance()
+                        self._skip_type_annotation()
                     break
                 p = self._expect("ident", "parameter name")
                 params.append(p.value)
@@ -460,6 +476,14 @@ class Parser:
                 if not self._match(","):
                     break
         self._expect(")")
+        if self._check(":"):
+            if not self._luau_only():
+                self._reject_luau_syntax(
+                    "function return type annotations (`function f(): T`)",
+                    "remove the annotation or target Luau.",
+                )
+            self._advance()
+            self._skip_type_annotation()
         body = self._parse_block_until("end")
         self._expect("end")
         return FunctionDef(params=params, is_vararg=is_vararg, body=body)
@@ -502,9 +526,17 @@ class Parser:
             if prec is None or prec < min_prec:
                 break
             self._advance()
+            op_kind = op.kind
+            if op_kind == "!=":
+                if not self._luau_only():
+                    self._reject_luau_syntax(
+                        "the `!=` operator",
+                        "use `~=` instead.",
+                    )
+                op_kind = "~="
             next_min = prec if op.kind in RIGHT_ASSOC else prec + 1
             right = self._parse_binop(next_min)
-            left = BinaryOp(op=op.kind, left=left, right=right, loc=self._loc(op))
+            left = BinaryOp(op=op_kind, left=left, right=right, loc=self._loc(op))
         return left
 
     def _parse_unary(self) -> Node:
@@ -599,9 +631,9 @@ class Parser:
             return self._parse_function_sig_after_keyword(tok)
         if k == "(":
             self._advance()
-            lit = self._parse_expr()
+            inner = self._parse_expr()
             self._expect(")")
-            return lit
+            return Paren(expr=inner, loc=self._loc(tok))
         if k == "{":
             self._advance()
             return self._parse_table()
