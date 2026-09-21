@@ -10,7 +10,7 @@
   var params = new URLSearchParams(window.location.search);
   var fromQuery = params.get("api");
   window.VAULT_CONFIG = {
-    apiBase: (fromQuery || "http://127.0.0.1:8000").replace(/\/+$/, ""),
+    apiBase: (fromQuery || "http://127.0.0.1:8080").replace(/\/+$/, ""),
     requestTimeoutMs: 30000,
   };
 })();
