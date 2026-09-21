@@ -12,6 +12,8 @@ Endpoints:
 * ``POST /obfuscate``   obfuscate Lua source, returns plain Lua text
 * ``POST /obfuscate.json`` obfuscate and return JSON with stats
 * ``GET  /``            small browser UI (served from :data:`web/static`)
+* ``GET  /styles.css`` / ``/config.js`` / ``/app.js`` / ``/favicon.ico``
+  the frontend assets, served at the site root.
 
 The service is designed to be driven both from the bundled UI and from a
 statically hosted site (for example the project's GitHub Pages build), so it
@@ -23,11 +25,11 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -51,6 +53,9 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    # Allow a page served from a public origin (e.g. GitHub Pages) to call this
+    # loopback service under Chrome's Private Network Access preflight.
+    allow_private_network=True,
 )
 
 
@@ -137,3 +142,41 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+# ``static/index.html`` references its assets with relative URLs
+# (``styles.css``, ``config.js``, ``app.js``) so that the same folder works
+# when dropped at the root of a static host such as GitHub Pages.  Served
+# from this app at ``/`` those requests resolve against the site root, so the
+# files must answer there too.  We register explicit routes instead of
+# mounting ``StaticFiles`` at ``/``: a root mount would shadow routes
+# registered afterwards and make every unknown path hit the static handler.
+_ROOT_ASSETS = {
+    "styles.css": "text/css",
+    "config.js": "application/javascript",
+    "app.js": "application/javascript",
+}
+
+
+def _asset_endpoint(filename: str, media_type: str) -> Callable[[], FileResponse]:
+    def _serve() -> FileResponse:
+        return FileResponse(STATIC_DIR / filename, media_type=media_type)
+
+    return _serve
+
+
+for _name, _media_type in _ROOT_ASSETS.items():
+    app.get(
+        f"/{_name}",
+        include_in_schema=False,
+        name=f"asset_{_name}",
+    )(_asset_endpoint(_name, _media_type))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    """Serve a favicon when one is present, otherwise answer 204."""
+    icon = STATIC_DIR / "favicon.ico"
+    if icon.is_file():
+        return FileResponse(icon, media_type="image/x-icon")
+    return Response(status_code=204)

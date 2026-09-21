@@ -202,12 +202,44 @@
   }
 
   // --- service health -------------------------------------------------------
+  function candidateBases() {
+    var stored = null;
+    try { stored = sessionStorage.getItem("vault-api-base"); } catch (e) { /* ignore */ }
+    var list = [stored].concat(CFG.apiCandidates || [CFG.apiBase]);
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var base = list[i] ? String(list[i]).replace(/\/+$/, "") : "";
+      if (base && out.indexOf(base) === -1) out.push(base);
+    }
+    return out;
+  }
+
+  function probe(base) {
+    return fetch(base + "/health", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
   function checkHealth() {
     setStatus("pending", "checking service…");
-    fetch(api("/health"))
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function (d) { setStatus("ok", "service online · v" + d.version); })
-      .catch(function () { setStatus("bad", "service offline"); });
+    var bases = candidateBases();
+    var i = 0;
+    function next() {
+      if (i >= bases.length) {
+        setStatus("bad", "service offline");
+        return;
+      }
+      var base = bases[i++];
+      probe(base)
+        .then(function (d) {
+          CFG.apiBase = base;
+          try { sessionStorage.setItem("vault-api-base", base); } catch (e) { /* ignore */ }
+          setStatus("ok", "service online · v" + d.version);
+        })
+        .catch(next);
+    }
+    next();
   }
 
   // --- source loading -------------------------------------------------------
@@ -336,8 +368,19 @@
         $("download").disabled = false;
       })
       .catch(function (err) {
-        if (err && err.name === "AbortError") showError("Request timed out", "The service did not respond in time.");
-        else showError("Service unreachable", "Start the service with `python -m web` (or install it as a Windows service), then retry.\n\n" + String(err && err.message || err));
+        if (err && err.name === "AbortError") {
+          showError("Request timed out", "The service did not respond in time.");
+        } else {
+          var tried = candidateBases().join(", ") || "(none)";
+          showError(
+            "Service unreachable",
+            "Could not reach the Vault-Obf service. Start it with `python -m web` " +
+              "(http://127.0.0.1:8080), then retry or press Refresh.\n" +
+              "Tried: " + tried + "\n" +
+              "To use a different host or port, reload with ?api=http://host:port\n\n" +
+              String((err && err.message) || err)
+          );
+        }
       })
       .then(function () {
         clearTimeout(timer);
