@@ -91,6 +91,8 @@ rejected with a clear error.
 
 Run `vault-obf --help` for the full option list.
 
+Example of a obfuscated script [example](https://raw.githubusercontent.com/polarr-is67/Vault-Obfuscator/main/example.luau)
+
 ### Python API
 
 ```python
