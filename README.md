@@ -26,13 +26,35 @@ identical program output.
   environment sanity checks, runtime version sealing, protected VM state, VM
   state validation, sampled bytecode integrity, runtime hook detection and
   controlled (opaque) failure routing. Dispatch can be emitted as a flat
-  `cascade`, a balanced `tree`, or a per-opcode `table` lookup.
+  `cascade`, a balanced `tree`, a per-opcode closure `table`, or an
+  `indirect` table that never compares `op` against a literal opcode. The
+  interpreter itself can be emitted as one of four VM families (`classic`,
+  `soa`, `threaded`, `scrambled`) selected per build.
+- **Scattered payload** (`scattered_payload`): blob strings are broken into
+  many small `local` string variables interleaved with decoy strings, so the
+  output no longer reads as one giant `\123\156\...` data literal. Payloads
+  switch to the printable-alphabet encoding (chunks read as plain alphabet
+  characters, not `\ddd` escape walls); the binary byte container is used
+  only when scattering is off. Chunk definitions are emitted shuffled with
+  mixed quoting (some merged two-per-line), the alphabet literal is split
+  into a concatenation, and every record array carries a per-build, per-record
+  numeric offset — so two identical value sets never produce the same
+  literal.
+- **vault-obfuscator-style locals** (`identifier_policy=vault`): VM internals
+  and payload chunks use short sequential `local v0`, `local v1`, ... names
+  like the classic obfuscator, and scattered decoy locals carry long or
+  deliberately silly filler words (`supercalifragilisticexpialidocious`,
+  `thingamajig`, ...). `identifier_policy=hex` (`_a56f8c`-style names) is
+  still available via `--set`.
 - **Encrypted payload**: constants and instructions are scrambled by a
   seed-derived LCG and decoded inside the VM at load time. The scrambled
   numbers are not emitted as bare integer tables; each numeric array is
-  packed into an opaque printable **string blob** (a seed-shuffled base-45
-  varint alphabet) that the VM expands back into numbers at load time, so the
-  output contains no long `{123,123,123,...}` lists.
+  packed into an opaque **string blob** that the VM expands back into numbers
+  at load time, so the output contains no long `{123,123,123,...}` lists.
+  The `strong` preset ships a proprietary binary **byte container** (magic
+  byte + format selector + per-blob additive key + signed LEB128/fixed-width
+  fields) instead of the printable base-45 alphabet, and gives each function
+  its own constant-recording scheme plus a per-build operand-order shuffle.
 - **Token-preserving minifier** for compact output (`--minify`) alongside
   pretty output for auditing (`--pretty`).
 - **CLI + Python API**: `vault-obf` on the command line or
@@ -102,7 +124,7 @@ result = obfuscate(
     target="lua51",    # or "luau"
     preset="medium",   # low | medium | strong
     verify=True,       # re-parse output as a sanity check
-    overrides={"dispatch": "table", "controlled_failures": True},
+    overrides={"dispatch": "table", "vm_family": "scrambled", "controlled_failures": True},
 )
 with open("out.lua", "w", encoding="utf-8") as fh:
     fh.write(result.output)
@@ -152,16 +174,21 @@ Pages on changes.
 
 ## Presets
 
-| preset   | opcode shuffle | proto/const shuffle | load integrity | dispatch | runtime hardening                                              | output   |
-|----------|----------------|---------------------|----------------|----------|----------------------------------------------------------------|----------|
-| `low`    | yes            | const/upval         | 3 regions      | cascade  | none                                                           | minified |
-| `medium` | yes            | + proto             | 4 regions      | cascade  | watchdog, env sanity, version seal, protected state            | minified |
-| `strong` | yes            | + proto             | 5 regions      | tree     | + anti-debug, hook detection, state validation, bytecode verify, controlled failures | pretty   |
+| preset   | opcode shuffle | proto/const shuffle | load integrity | dispatch  | VM family | runtime hardening                                             | output   |
+|----------|----------------|---------------------|----------------|-----------|-----------|---------------------------------------------------------------|----------|
+| `low`    | yes            | const/upval         | 3 regions      | auto      | auto      | none                                                          | minified |
+| `medium` | yes            | + proto             | 4 regions      | auto      | auto      | watchdog, env sanity, version seal, protected state           | minified |
+| `strong` | yes            | + proto             | 5 regions      | auto      | auto      | + anti-debug, hook detection, state validation, bytecode verify, controlled failures, binary payload, diverse constant schemes, scattered payload | minified |
 
 The exact mix of protections available at each level is defined in
 `vault/presets/config.py`. Every field can be overridden per build with
 `--set` (CLI), the `overrides` argument (Python) or the `overrides` object
-(HTTP).
+(HTTP). `dispatch: "auto"` resolves one dispatch strategy (cascade / tree /
+table / indirect) per build, and `vm_family: "auto"` resolves one execution
+family (`classic` / `soa` / `threaded` / `scrambled`) per build, so two
+builds from the same source differ in interpreter shape as well as in
+opcode/constant shuffling. Under `strong` the output is minified by default;
+pass `--pretty` for an audit-friendly form.
 
 ## Architecture
 
@@ -177,10 +204,15 @@ source ──► frontend (lexer + parser + target validation)
 The emitted file contains:
 
 1. the encoded payload table `Q`, whose numeric arrays are embedded as opaque
-   printable string blobs and expanded by a small load-time decoder,
+   string blobs (proprietary binary byte containers under `strong`, printable
+   base-45 varints otherwise), expanded by a small load-time decoder, and —
+   when `scattered_payload` is enabled — spread across many small chunk
+   variables interleaved with decoy strings,
 2. a Lua runtime implementing a register-based VM (frame stack, closures with
    upvalue cells, varargs, metamethods, multi-value returns),
-3. a dispatch chain matching the build's permuted opcode numbers,
+3. a dispatch chain matching the build's permuted opcode numbers — under
+   `indirect` this is a shuffled opcode->key remap blob plus a closure table,
+   so the loop never contains a literal `op==N` comparison,
 4. integrity/watchdog/anti-debug fragments selected by the preset.
 
 Source identifiers and string literals are not preserved; the original
@@ -250,6 +282,23 @@ is available. Set `VAULT_LUA` to point at a specific binary, e.g.:
 ```bash
 VAULT_LUA=/usr/bin/lua5.1 python -m pytest tests -q
 ```
+
+## Reversing evidence
+
+`tools/reversing_bench.py` measures how much structural fingerprint a build
+leaks to cheap grep-level analysis (sentinel strings, source identifiers,
+`op==` ladders, handler-closure tables, the sequential frame-slot locator
+block, interpreter `while` surface) and reports cross-build structural
+correlation. A `--choco-command` hook runs a reference obfuscator on the same
+source for a side-by-side ratio. Sample run:
+
+```bash
+python tools/reversing_bench.py --preset strong \
+    --choco-command "ruby choco.py {inp} > {outp}"
+```
+
+The generated reports live in `docs/evidence/` (e.g. `reversing-bench.md`,
+`reversing-bench.json`).
 
 ## License
 

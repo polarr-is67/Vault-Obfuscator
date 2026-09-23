@@ -49,6 +49,8 @@ OPCODE_LIST: List[str] = [
     "GETRET",       # 36  a=dst  b=index
     "MARK",         # 37  label-anchor (decoded: d=target_pc, discards if wanted)
     "NOP",          # 38  no-op
+    "ISTBL",        # 39  a=dst  b=reg   (dst = type(reg)=='table')
+    "ISTRG",        # 40  a=dst  b=reg   (dst = type(reg)=='string')
 ]
 
 OPCODE_COUNT = len(OPCODE_LIST)

@@ -237,6 +237,19 @@ class If(Node):
 
 
 @dataclass
+class IfExpr(Node):
+    """Luau if-then-else *expression* ``if c then a elseif c2 then b else d``.
+
+    Unlike the ``If`` statement node, every branch holds exactly one value
+    *expression*, the ``else`` branch is mandatory, and the whole expression
+    yields exactly one value (branch values are truncated to a single result,
+    matching Luau semantics).  Lowered to conditional jumps by the IR builder.
+    """
+
+    branches: List[IfBranch] = field(default_factory=list)
+
+
+@dataclass
 class While(Node):
     """``while cond do body end``."""
 

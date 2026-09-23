@@ -25,7 +25,7 @@ SUM_MOD = (1 << 31) - 1
 #: Version of the VM runtime + payload protocol. Baked into every build and
 #: checked at load time so a payload produced by an older/newer emitter fails
 #: cleanly instead of mis-running.
-VM_VERSION = 2
+VM_VERSION = 3
 
 #: Position of the payload records in the runtime `Q` table:
 #: [1]=LCG params, [2]=integrity, [3]=metamethod keys, [4]=error messages,
@@ -58,10 +58,22 @@ class EncodedProto:
     params: int
     is_vararg: bool
     maxstack: int
+    #: Constant-recording scheme applied to this prototype's constant blob
+    #: (0 plain, 1 affine-minus / xor'd strings, 2 affine-plus / reversed
+    #: strings).  Chosen per build when ``diverse_consts`` is enabled.
+    cmode: int = 0
+    #: When 1, operand words inside every full 6-word instruction group are
+    #: stored in the build's shuffled semantic order (``params.cw``).
+    cgrp: int = 0
     children: List[int] = field(default_factory=list)
     upvals: List[Tuple[int, int]] = field(default_factory=list)
     code_blob: List[int] = field(default_factory=list)
     const_blob: List[int] = field(default_factory=list)
+    #: Physical-instruction-order map (1-based) for the ``scrambled`` family;
+    #: empty otherwise.  Stored as the sixth record field and decoded verbatim
+    #: into ``pr.oo`` so the interpreter can thread through a non-sequential
+    #: decoded stream.
+    order: List[int] = field(default_factory=list)
     #: Checksum the VM can re-derive over the *decoded* instruction stream to
     #: catch post-decode tampering of the bytecode (bytecode integrity check).
     xsum: int = 0
@@ -102,6 +114,15 @@ class DecodeParams:
     #: byte layout never exposes the fixed tag numbers.  ``tag_perm[t]`` is
     #: the value emitted in place of original tag ``t``; the VM inverts it.
     tag_perm: List[int] = field(default_factory=list)
+    #: Per-build additive key embedded in every binary blob header so the
+    #: same value bytes decouple across build seeds and across records.
+    pack: int = 0
+    #: Per-build string-byte XOR key used by constant schemes 1 and 2.
+    const_xor: int = 0
+    #: Per-build semantic-order permutation of the six operand words inside a
+    #: full instruction group; used when a prototype's ``cgrp`` flag is set.
+    #: ``cw[stored_slot]`` is the semantic offset (0..5) placed there.
+    cw: List[int] = field(default_factory=lambda: list(range(6)))
 
 
 @dataclass
@@ -171,6 +192,12 @@ class BytecodeEncoder:
         tag_perm = list(range(8))
         self.rng.shuffle(tag_perm)
 
+        # Per-build binary-payload keys and the operand-order permutation.
+        cw = list(range(6))
+        self.rng.shuffle(cw)
+        pack = self._derive(1, 255)
+        const_xor = self._derive(1, 255)
+
         # Build-specific secret bonded to the payload's own LCG parameters so
         # it can never be transplanted across builds.
         secret = self._derive(1, 0x7FFFFFFF)
@@ -194,6 +221,9 @@ class BytecodeEncoder:
                 field_step=field_step,
                 encoding_layers=encoding_layers,
                 tag_perm=tag_perm,
+                pack=pack,
+                const_xor=const_xor,
+                cw=cw,
             ),
             meta_keys=list(meta_keys or []),
             messages=list(messages or []),
@@ -238,6 +268,8 @@ class BytecodeEncoder:
             "vm_state_validation": 64,
             "bytecode_integrity": 128,
             "controlled_failures": 256,
+            "binary_payload": 512,
+            "diverse_consts": 1024,
         }
         flags = 0
         for key, bit in bits.items():
@@ -253,9 +285,15 @@ class BytecodeEncoder:
             params=pi.params,
             is_vararg=pi.is_vararg,
             maxstack=pi.maxstack,
+            cmode=0,
+            cgrp=0,
             children=list(pi.children),
             upvals=list(pi.upvals),
+            order=list(pi.order),
         )
+        if self.preset.get("diverse_consts", False):
+            epr.cmode = self._derive(0, 2)
+            epr.cgrp = self._derive(0, 1)
         s0_i = (params.lcg_s0 + record_index * params.stride) % params.lcg_m
 
         # instruction stream encoding
@@ -266,6 +304,10 @@ class BytecodeEncoder:
         # words advances the delta by the build's ``field_step``.  With a
         # layer-1 build ``field_step`` is zero, so all six words share the
         # delta and the encoding degrades to the classic additive scheme.
+        #
+        # When ``cgrp`` is set, a full group's operand words are placed in the
+        # build's shuffled semantic order (``params.cw``), so the same group
+        # of instructions has a distinct byte arrangement per record/build.
         s = s0_i
         code: List[int] = []
         words = pi.code
@@ -276,9 +318,14 @@ class BytecodeEncoder:
             base = (s * params.code_mul) % params.lcg_m
             delta = base % params.code_mod
             take = 6 if wi + 6 <= nwords else nwords - wi
-            for k in range(take):
-                code.append(words[wi + k] + delta)
-                delta = (delta + params.field_step) % params.code_mod
+            if epr.cgrp and take == 6:
+                for k in range(6):
+                    code.append(words[wi + params.cw[k]] + delta)
+                    delta = (delta + params.field_step) % params.code_mod
+            else:
+                for k in range(take):
+                    code.append(words[wi + k] + delta)
+                    delta = (delta + params.field_step) % params.code_mod
             wi += take
         epr.code_blob = code
 
@@ -296,7 +343,7 @@ class BytecodeEncoder:
         s = s0_i
         for c in pi.constants:
             s = _lcg_step(s, params.lcg_a, params.lcg_c, params.lcg_m)
-            consts.extend(self._encode_const(c, params))
+            consts.extend(self._encode_const(c, params, epr.cmode))
         epr.const_blob = consts
         return epr
 
@@ -306,11 +353,14 @@ class BytecodeEncoder:
         s = s0_i
         for v in values:
             s = _lcg_step(s, params.lcg_a, params.lcg_c, params.lcg_m)
-            out.extend(self._encode_const(v, params))
+            out.extend(self._encode_const(v, params, 0))
         return out
 
-    def _encode_const(self, value, params: DecodeParams) -> List[int]:
+    def _encode_const(self, value, params: DecodeParams, mode: int = 0) -> List[int]:
         perm = params.tag_perm or list(range(8))
+        sx = params.const_xor
+        int_mul = params.int_mul
+        int_add = params.int_add
 
         def tg(t: int) -> int:
             return perm[t]
@@ -324,22 +374,48 @@ class BytecodeEncoder:
             out.append(tg(2))
         elif isinstance(value, (int, float)):
             if value == int(value) and abs(value) < (1 << 52):
-                out.append(tg(3))
-                out.append(int(value) * params.int_mul + params.int_add)
+                iv = int(value)
+                if mode == 1:
+                    enc = iv * int_mul - int_add
+                elif mode == 2:
+                    enc = iv * int_mul + int_add + sx
+                else:
+                    enc = iv * int_mul + int_add
+                if enc <= -(1 << 52) or enc >= (1 << 52):
+                    # The multiplicative form overflows the exact double /
+                    # blob range.  Carry the value itself through the tag-6
+                    # rational form with denominator 1, which stays exact for
+                    # every constant magnitude we accept (|v| < 2**52).
+                    if mode == 1:
+                        out.extend([tg(6), 1, iv])
+                    else:
+                        out.extend([tg(6), iv, 1])
+                else:
+                    out.append(tg(3))
+                    out.append(enc)
             else:
-                out.extend(self._encode_float(float(value), params, tg))
+                out.extend(self._encode_float(float(value), params, tg, mode))
         elif isinstance(value, str):
             out.append(tg(5))
             data = value.encode("utf-8")
             shift = params.str_shift
             out.append(len(data))
-            for byte in data:
-                out.append((byte - shift) % 256)
+            if mode == 2:
+                # reversed byte order with the affine shift.
+                for byte in reversed(data):
+                    out.append((byte - shift) % 256)
+            elif mode == 1:
+                # affine shift plus the per-build xor key.
+                for byte in data:
+                    out.append((byte - shift + sx) % 256)
+            else:
+                for byte in data:
+                    out.append((byte - shift) % 256)
         else:
             raise TypeError(f"cannot encode constant {value!r}")
         return out
 
-    def _encode_float(self, value: float, params: DecodeParams, tg) -> List[int]:
+    def _encode_float(self, value: float, params: DecodeParams, tg, mode: int = 0) -> List[int]:
         """Encode a non-integral float exactly.
 
         Rational reconstruction is bounded by ``2^24`` which covers the
@@ -350,6 +426,9 @@ class BytecodeEncoder:
         from fractions import Fraction
         f = Fraction(value).limit_denominator(1 << 24)
         if f == Fraction(value) and f.denominator != 1:
+            if mode == 1:
+                # numerator/denominator swapped; the runtime reverses it.
+                return [tg(6), int(f.denominator), int(f.numerator)]
             return [tg(6), int(f.numerator), int(f.denominator)]
         return [tg(7), value]
 

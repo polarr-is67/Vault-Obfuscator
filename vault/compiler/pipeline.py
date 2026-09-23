@@ -23,7 +23,7 @@ from vault.bytecode.encoder import BytecodeEncoder
 from vault.bytecode.generator import BytecodeGenerator
 from vault.frontend import parse_source
 from vault.ir.builder import IRBuilder
-from vault.presets.config import get_preset
+from vault.presets.config import get_preset, resolve_shapes
 from vault.utils.random import DeterministicRandom
 from vault.utils.stats import BuildStats
 from vault.vm.emitter import DEFAULT_MESSAGES, DEFAULT_META_KEYS, ObfuscationOptions, VMOmitter
@@ -106,8 +106,11 @@ def obfuscate(
         debug=debug,
         overrides=overrides,
     )
-    # capture preset config once for stats
+    # capture preset config once for stats; resolve per-build "auto" shapes
+    # (VM family / dispatch strategy) deterministically from the seed so the
+    # whole build agrees on one concrete architecture.
     cfg = get_preset(options.preset, overrides)
+    resolve_shapes(cfg, seed)
     if pretty is not None:
         cfg.pretty = pretty
     if minify is not None:
@@ -149,5 +152,7 @@ def obfuscate(
         preset=preset,
         target=target,
         source_lines=source.count("\n") + 1,
+        vm_family=cfg.vm_family,
+        dispatch=cfg.dispatch,
     )
     return BuildResult(output=output, stats=stats)

@@ -112,10 +112,16 @@ class Lexer:
                 tokens.append(self._lex_long_comment_or_line_comment())
                 continue
             if c == "/" and self._peek(1) == "/" and self._is_luau_double_slash():
-                # Luau floor division -- tokenised the same as a keyword operator.
-                self._advance()
-                self._advance()
-                tokens.append(Token("//", "//", self.line, self.col - 2))
+                if self._peek(2) == "=":
+                    # `//=` compound floor division, matched greedily.
+                    self._advance()
+                    self._advance()
+                    self._advance()
+                    tokens.append(Token("//=", "//=", self.line, self.col - 3))
+                else:
+                    self._advance()
+                    self._advance()
+                    tokens.append(Token("//", "//", self.line, self.col - 2))
                 continue
             if c == "[":
                 br = self._lex_bracket_if_long()
@@ -129,7 +135,8 @@ class Lexer:
                 tokens.append(self._lex_quoted_string())
                 continue
             if c == "`":
-                raise self._error("interpolated strings are not supported by the lexer without Luau target")
+                tokens.append(self._lex_interp_string())
+                continue
             if c in _NAME_START:
                 tokens.append(self._lex_name())
                 continue
@@ -222,6 +229,104 @@ class Lexer:
 
     # -- strings ----------------------------------------------------------
 
+    def _lex_interp_string(self) -> Token:
+        """Lex a Luau backtick interpolated string.
+
+        Returns a ``Token("interp", parts)`` whose value is a list of
+        ``("text", str)`` literal segments and ``("expr", str)`` raw
+        expression slices.  The parser re-lexes each ``"expr"`` slice with a
+        nested parser so the full expression grammar is available inside the
+        braces.  ``\\`` escapes the backtick, ``{``, ``\\`` and a newline;
+        the ``{{`` sequence is rejected, matching Luau.
+        """
+        start_line, start_col = self.line, self.col
+        self._advance()  # opening backtick
+        parts: List[tuple] = []
+        buf: List[str] = []
+        while self.pos < self.n:
+            c = self._peek()
+            if c == "`":
+                self._advance()
+                if buf:
+                    parts.append(("text", "".join(buf)))
+                return Token("interp", parts, start_line, start_col)
+            if c == "\\":
+                self._advance()
+                e = self._peek()
+                if e == "`":
+                    buf.append("`")
+                    self._advance()
+                elif e == "{":
+                    buf.append("{")
+                    self._advance()
+                elif e == "\\":
+                    buf.append("\\")
+                    self._advance()
+                elif e == "}":
+                    # ``\`` escapes a literal ``}`` (quoted strings never see
+                    # a plain ``}``, so this branch is only reachable inside
+                    # backtick strings where braces are delimiters).
+                    buf.append("}")
+                    self._advance()
+                elif e in ("\n", "\r"):
+                    # backslash-newline continuation swallows the newline.
+                    self._advance()
+                    if e == "\r" and self._peek() == "\n":
+                        self._advance()
+                else:
+                    buf.append(self._lex_escape())
+                continue
+            if c == "{":
+                nx = self._peek(1)
+                if nx == "{":
+                    raise self._error(
+                        "'{{' is not allowed inside a Luau interpolated string"
+                    )
+                if buf:
+                    parts.append(("text", "".join(buf)))
+                    buf = []
+                self._advance()  # opening '{'; _lex_interp_expr_raw reads the body
+                parts.append(("expr", self._lex_interp_expr_raw()))
+                continue
+            buf.append(self._advance())
+        raise self._error("unfinished interpolated string")
+
+    def _lex_interp_expr_raw(self) -> str:
+        """Consume the balanced-brace body of one ``{expr}`` interpolation."""
+        # the opening '{' has been consumed.
+        depth = 1
+        out: List[str] = []
+        while self.pos < self.n:
+            c = self._peek()
+            if c in ("'", '"'):
+                out.append(self._consume_raw_quoted())
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    self._advance()
+                    return "".join(out)
+            out.append(self._advance())
+        raise self._error("unfinished interpolated string (unclosed '{')")
+
+    def _consume_raw_quoted(self) -> str:
+        """Copy a quoted string verbatim (escapes preserved), for nesting
+        inside interpolation expression slices."""
+        q = self._peek()
+        out = [self._advance()]
+        while self.pos < self.n:
+            c = self._advance()
+            out.append(c)
+            if c == "\\":
+                if self.pos < self.n:
+                    out.append(self._advance())
+                continue
+            if c == q:
+                break
+        return "".join(out)
+
     def _lex_quoted_string(self) -> Token:
         start_line, start_col = self.line, self.col
         quote = self._advance()  # opening quote
@@ -270,7 +375,29 @@ class Lexer:
                 raise self._error("escape sequence out of range")
             return chr(val)
         if c == "u":
-            raise self._error("unicode escapes not supported by Lua 5.1 string literals")
+            if self._peek() != "{":
+                raise self._error("invalid unicode escape (expected '{')")
+            self._advance()  # '{'
+            hx = []
+            while self._peek() and self._peek() in "0123456789abcdefABCDEF":
+                hx.append(self._advance())
+            if not hx:
+                raise self._error("invalid unicode escape (missing codepoint)")
+            if self._peek() != "}":
+                raise self._error("invalid unicode escape (missing '}')")
+            self._advance()
+            cp = int("".join(hx), 16)
+            if cp > 0x10FFFF:
+                raise self._error("unicode escape codepoint out of range")
+            # UTF-8 bytes will be produced when the emitter encodes the
+            # string (the lexer works in decoded characters, matching Luau's
+            # ``\u{...}`` behaviour of inserting a UTF-8 byte sequence).
+            return chr(cp)
+        if c == "z":
+            # skip all following whitespace including newlines (Lua 5.3 \z).
+            while self._peek() and self._peek() in " \t\r\n":
+                self._advance()
+            return ""
         raise self._error(f"invalid escape sequence \\{c}")
 
     # -- names ------------------------------------------------------------

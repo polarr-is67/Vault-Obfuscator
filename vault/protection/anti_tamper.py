@@ -84,7 +84,10 @@ def build_watchdog(name_map: Dict[str, str], preset_config, meta=None) -> str:
     if preset_config.get("unexpected_hook_detection", False):
         lines.append(f"  if {n['WDOGN']}%2==0 then {n['HOOK']}() end")
     if preset_config.get("bytecode_integrity", False):
-        # `pr` and `cd` are the dispatch-loop locals in scope at @@WK@@.
-        lines.append(f"  if {n['WDOGN']}%3==0 then {n['BXC']}(cd,pr.xs or 0) end")
+        # The watchdog sums the *decoded* instruction words.  ``pr.kd`` is the
+        # flat word stream in every VM family (the register families keep it
+        # for integrity after splitting ``pr.ff``), so the same stored
+        # checksum covers all four architectures.
+        lines.append(f"  if {n['WDOGN']}%3==0 then {n['BXC']}(pr.kd,pr.xs or 0) end")
     lines.append("end")
     return "\n".join(lines)

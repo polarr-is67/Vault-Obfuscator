@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from vault import ConfigError, LexerError, ParseError, VaultError
+from vault import ConfigError, LexerError, ParseError, UnsupportedFeatureError, VaultError
 from vault.compiler.pipeline import obfuscate
 from vault.presets.config import get_preset
 
@@ -18,6 +18,11 @@ def test_unknown_preset_is_config_error():
 
 def test_lexer_error():
     with pytest.raises(LexerError):
+        obfuscate("local x = `bad", seed=1)
+
+
+def test_interp_rejected_on_lua51():
+    with pytest.raises(UnsupportedFeatureError):
         obfuscate("local x = `bad`", seed=1)
 
 

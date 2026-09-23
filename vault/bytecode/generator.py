@@ -34,6 +34,11 @@ class ProtoImage:
     code: List[int] = field(default_factory=list)
     children: List[int] = field(default_factory=list)
     upvals: List[tuple] = field(default_factory=list)
+    #: Physical-instruction-order permutation (1-based).  Empty unless the
+    #: ``scrambled`` VM family is active, which emits the code words in a
+    #: shuffled physical order and trades the execution-order stream for an
+    #: encoded order map the interpreter threads through.
+    order: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -118,7 +123,7 @@ class BytecodeGenerator:
                 consts.append("".join(
                     chr(self.rng.randint(97, 122)) for _ in range(self.rng.randint(1, 6))
                 ))
-        return ProtoImage(
+        pim = ProtoImage(
             proto_id=proto_id,
             params=self.rng.randint(0, 3),
             is_vararg=False,
@@ -128,6 +133,8 @@ class BytecodeGenerator:
             children=[],
             upvals=[],
         )
+        self._scramble_if_needed(pim)
+        return pim
 
     def _emit_proto(self, proto: IRProto, image: BytecodeImage) -> ProtoImage:
         new_id = image.protomap[proto.proto_id]
@@ -161,6 +168,7 @@ class BytecodeGenerator:
         for ins in proto.instructions:
             pim.code.extend(self._emit_instruction(ins, image, remap))
         pim.children = list(child_remap)
+        self._scramble_if_needed(pim)
         return pim
 
     def _emit_instruction(self, ins: IRInstr, image: BytecodeImage, remap) -> List[int]:
@@ -175,3 +183,33 @@ class BytecodeGenerator:
             b = image.protomap[b] + 1
         # NOP / MARK handled naturally (d holds resolved pc for MARK too)
         return [mapped, a, b, c, d, e]
+
+    def _scramble_if_needed(self, pim: ProtoImage) -> None:
+        """Permute a proto's instruction groups physically (``scrambled``).
+
+        The decoded instruction words end up in a shuffled physical order and
+        ``pim.order`` records, for each logical instruction index, its 1-based
+        physical group index.  The runtime fetches ``physical = order[logical]``
+        so execution still follows logical (jump-target) order while the
+        decoded stream itself is not in execution order.
+        """
+        if not self.preset or self.preset.get("vm_family") != "scrambled":
+            return
+        n = len(pim.code) // 6
+        if n < 2:
+            pim.order = []
+            return
+        perm = list(range(n))
+        self.rng.shuffle(perm)
+        out: List[int] = []
+        for g in perm:
+            out.extend(pim.code[g * 6 : g * 6 + 6])
+        pim.code = out
+        # Physical slot ``j`` now holds the group that used to be ``perm[j]``,
+        # so the group holding logical instruction ``i`` sits at
+        # ``inverse_perm[i]``.  The runtime fetch ``physical = order[logical]``
+        # therefore needs the inverse map (1-based on both sides).
+        inverse_perm = [0] * n
+        for j, g in enumerate(perm):
+            inverse_perm[g] = j
+        pim.order = [inverse_perm[i] + 1 for i in range(n)]

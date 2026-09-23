@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import subprocess
@@ -151,10 +152,22 @@ def run_lua():
 
 
 @pytest.fixture(scope="session")
-def run_lua_source():
+def run_lua_source(tmp_path_factory):
+    """Run ``text`` through an interpreter.
+
+    The script is materialized to a temp file before execution so it is not
+    passed on the command line — obfuscated output routinely exceeds
+    Windows' 32767-byte argv limit.
+    """
+
+    root = tmp_path_factory.mktemp("run_source")
+    counter = itertools.count()
+
     def _run(interp: str, source: str, timeout: int = 60) -> subprocess.CompletedProcess:
+        path = root / f"chunk_{next(counter)}.lua"
+        path.write_text(source, encoding="utf-8", newline="\n")
         return subprocess.run(
-            _lua_cmd(interp) + ["-e", source],
+            _lua_cmd(interp) + [str(path)],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -204,12 +217,7 @@ def assert_matches_reference(run_lua_source):
         for preset in PRESETS:
             result = obfuscate(src, seed=7, target="lua51", preset=preset, verify=True)
             assert result.output, f"{preset}: empty output"
-            proc = subprocess.run(
-                _lua_cmd(interp) + ["-e", result.output],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            proc = run_lua_source(interp, result.output)
             assert proc.returncode == ref.returncode, (
                 f"{preset}: return code {proc.returncode} != {ref.returncode}: "
                 f"{proc.stderr.strip()[:400]}"

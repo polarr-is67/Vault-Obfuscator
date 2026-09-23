@@ -25,7 +25,7 @@ from vault.utils.luaval import (
 from vault.utils.random import DeterministicRandom
 
 
-def _decode_blob(s: str, alphabet: str):
+def _decode_blob(s: str, alphabet: str, delta: int = 0):
     """Reference decoder mirroring the runtime's Lua implementation."""
     radix = BLOB_RADIX
     rev = {ch: i for i, ch in enumerate(alphabet)}
@@ -41,7 +41,8 @@ def _decode_blob(s: str, alphabet: str):
             if pos < radix:
                 break
             mul *= radix
-        out.append(acc // 2 if acc % 2 == 0 else -(acc + 1) // 2)
+        xv = acc // 2 if acc % 2 == 0 else -(acc + 1) // 2
+        out.append(xv - delta)
     return out
 
 
@@ -92,6 +93,27 @@ def test_roundtrip_fuzz():
         n = rnd.randint(0, 40)
         vals = [rnd.randint(-(1 << 51), (1 << 51) - 1) for _ in range(n)]
         assert _decode_blob(encode_int_blob(vals, alpha), alpha) == vals
+
+
+def test_roundtrip_with_delta_decouples_identical_values():
+    alpha = _alphabet()
+    vals = [0, 1, 2, 3, 4, 5, 6, 7]
+    a = encode_int_blob(vals, alpha, delta=0)
+    b = encode_int_blob(vals, alpha, delta=137)
+    c = encode_int_blob(vals, alpha, delta=991)
+    # identical value sets encode differently per record...
+    assert len({a, b, c}) == 3
+    # ...but decode back to the same integers.
+    assert _decode_blob(a, alpha, 0) == vals
+    assert _decode_blob(b, alpha, 137) == vals
+    assert _decode_blob(c, alpha, 991) == vals
+
+
+def test_roundtrip_delta_keeps_negatives():
+    alpha = _alphabet()
+    vals = [-7, -1, 0, 1, 5, -500, 12]
+    enc = encode_int_blob(vals, alpha, delta=303)
+    assert _decode_blob(enc, alpha, 303) == vals
 
 
 def test_can_blob_guard():

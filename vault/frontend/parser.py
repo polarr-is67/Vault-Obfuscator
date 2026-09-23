@@ -33,6 +33,7 @@ from vault.ast.nodes import (
     GlobalFunction,
     If,
     IfBranch,
+    IfExpr,
     While,
     Repeat,
     NumericFor,
@@ -79,7 +80,7 @@ RIGHT_ASSOC = {"^", ".."}
 
 COMPOUND_OPS = {
     "+=": "+", "-=": "-", "*=": "*", "/=": "/",
-    "%=": "%", "^=": "^", "..=": "..",
+    "%=": "%", "^=": "^", "..=": "..", "//=": "//",
 }
 
 
@@ -221,6 +222,18 @@ class Parser:
             return self._parse_function_statement_after_keyword(tok)
         if k == "local":
             return self._parse_local_statement()
+        if k == "ident" and tok.value == "const" and self._peek(1).kind in ("ident", "function"):
+            # ``const`` is a contextual Luau keyword: only a binding when a
+            # declaration follows.  Immutability is a static/compile-time
+            # property, so lowering to ``local`` matches the runtime
+            # behaviour exactly.
+            if not self._luau_only():
+                self._reject_luau_syntax(
+                    "`const` bindings",
+                    "use `local`, or target Luau.",
+                )
+            self._advance()
+            return self._parse_local_statement_after_keyword(tok)
         if k == "break":
             self._advance()
             return Break(loc=self._loc(tok))
@@ -267,6 +280,60 @@ class Parser:
             branches.append(IfBranch(cond=None, body=b, loc=self._loc(tok)))
         self._expect("end")
         return If(branches=branches, loc=self._loc(tok))
+
+    def _parse_if_expression(self) -> Node:
+        """Parse a Luau if-then-else expression.
+
+        ``ifelseexp ::= 'if' exp 'then' exp {'elseif' exp 'then' exp} 'else' exp``
+
+        The ``else`` branch is mandatory (unlike an ``if`` statement) and each
+        branch holds exactly one expression; the whole expression always
+        yields one value.
+        """
+        tok = self._advance()  # 'if'
+        cond = self._parse_expr()
+        self._expect("then")
+        val = self._parse_expr()
+        branches = [IfBranch(cond=cond, body=[val], loc=self._loc(tok))]
+        while self._check("elseif"):
+            self._advance()
+            c = self._parse_expr()
+            self._expect("then")
+            v = self._parse_expr()
+            branches.append(IfBranch(cond=c, body=[v], loc=self._loc(tok)))
+        if not self._check("else"):
+            raise self._err_here("expected 'else' in if-then-else expression")
+        self._advance()
+        end_val = self._parse_expr()
+        branches.append(IfBranch(cond=None, body=[end_val], loc=self._loc(tok)))
+        return IfExpr(branches=branches, loc=self._loc(tok))
+
+    def _build_interp(self, parts: List[tuple], loc) -> Node:
+        """Lower a backtick interpolated string into concatenation.
+
+        Literal segments become string literals; ``{expr}`` segments become
+        ``tostring(expr)`` (the expression truncated to one value), matching
+        Luau's interpolation semantics.
+        """
+        if not parts:
+            return Literal("", loc=loc)
+        if len(parts) == 1 and parts[0][0] == "text":
+            return Literal(parts[0][1], loc=loc)
+        acc: Optional[Node] = None
+        for kind, val in parts:
+            if kind == "text":
+                piece: Node = Literal(val, loc=loc)
+            else:
+                sub = Parser(val, target=self.target, reporter=self.reporter)
+                expr = sub._parse_expr()
+                # Parentheses truncate a multi-value call to one result.
+                piece = Call(
+                    func=Name("tostring", loc=loc),
+                    args=[Paren(expr=expr, loc=loc)],
+                    loc=loc,
+                )
+            acc = piece if acc is None else BinaryOp(op="..", left=acc, right=piece, loc=loc)
+        return acc
 
     def _parse_while(self) -> While:
         tok = self._advance()
@@ -326,7 +393,10 @@ class Parser:
         return Assignment(targets=[target], values=[func], loc=self._loc(tok))
 
     def _parse_local_statement(self) -> Node:
-        tok = self._advance()  # 'local'
+        tok = self._advance()  # 'local' (or consumed 'const')
+        return self._parse_local_statement_after_keyword(tok)
+
+    def _parse_local_statement_after_keyword(self, tok: Token) -> Node:
         if self._check("function"):
             self._advance()
             name_tok = self._expect("ident", "local function name")
@@ -534,6 +604,12 @@ class Parser:
                         "use `~=` instead.",
                     )
                 op_kind = "~="
+            if op_kind == "//":
+                if not self._luau_only():
+                    self._reject_luau_syntax(
+                        "the `//` floor-division operator",
+                        "use `math.floor(a / b)` or target Luau.",
+                    )
             next_min = prec if op.kind in RIGHT_ASSOC else prec + 1
             right = self._parse_binop(next_min)
             left = BinaryOp(op=op_kind, left=left, right=right, loc=self._loc(op))
@@ -623,6 +699,21 @@ class Parser:
         if k in ("string", "long-string"):
             self._advance()
             return Literal(tok.value, loc=self._loc(tok))
+        if k == "interp":
+            self._advance()
+            if not self._luau_only():
+                self._reject_luau_syntax(
+                    "interpolated strings (backtick strings)",
+                    "use string concatenation instead, or target Luau.",
+                )
+            return self._build_interp(tok.value, self._loc(tok))
+        if k == "if":
+            if not self._luau_only():
+                self._reject_luau_syntax(
+                    "if-then-else expressions (`if c then a else b`)",
+                    "use an `if` statement instead, or target Luau.",
+                )
+            return self._parse_if_expression()
         if k == "ident":
             self._advance()
             return Name(tok.value, loc=self._loc(tok))

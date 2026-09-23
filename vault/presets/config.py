@@ -37,10 +37,29 @@ class PresetConfig:
     decoy_helpers: int = 0
 
     # dispatch
-    dispatch: str = "cascade"  # "cascade" | "tree" | "table"
+    # "cascade" | "tree" | "table" | "indirect" | "auto"
+    dispatch: str = "cascade"
     # Split frame fetch from instruction execution so the interpreter is not
     # a single contiguous fetch/decode/switch/execute loop.
     nonlinear_vm: bool = False
+    # Execution-architecture family.  "auto" makes the emitter pick one of the
+    # preset's pool deterministically from the build seed, so two builds of the
+    # same preset can run on materially different interpreter architectures:
+    #
+    #   classic  - the word-stride register interpreter (all dispatch shapes),
+    #   soa      - decoded code split into six parallel field arrays; the
+    #              instruction pointer counts instructions, not words, so the
+    #              "6-word instruction" structure and its stride disappear,
+    #   threaded - soa layout plus a successor table: fallthrough reads the
+    #              next instruction id from data instead of an arithmetic step,
+    #   scrambled - soa layout plus a physical-instruction-order permutation;
+    #              the decoded stream is not in execution order and every
+    #              fetch threads through an encoded order map.
+    vm_family: str = "classic"
+    # Depth of decoy/miss handling added to the dispatch surface: for
+    # table/indirect strategies, unreachable handler entries under keys no
+    # opcode ever produces; for cascade, dead ``op==<huge>`` ladder edges.
+    dispatch_noise: int = 0
 
     # integrity
     integrity_regions: int = 3
@@ -82,8 +101,27 @@ class PresetConfig:
     # everywhere else (Roblox/Luau, loadstring, stdin).
     self_file_check: bool = False
 
+    # payload format / hardening
+    # Embed every payload array as a proprietary custom binary container
+    # (magic + format + per-blob key + LEB/fixed-width fields) instead of the
+    # printable base-45 alphabet.
+    binary_payload: bool = False
+    # Give each prototype its own constant-recording scheme (integer form,
+    # string-key form, reversed-string form) and, half the time, its own
+    # operand-order permutation, so constant blobs are not one uniform shape.
+    diverse_consts: bool = False
+    # Emit every payload array as many small ``local`` string variables
+    # interleaved with innocent-looking decoy string locals instead of one
+    # huge ``\123\121\...`` literal, so the payload does not appear as a
+    # single recognizable data blob.  Uses the printable-alphabet encoding
+    # even under ``binary_payload``: binary bytes are non-printable, so a
+    # scattered binary blob would still render as ``\ddd`` escape walls.
+    scattered_payload: bool = False
+
     # identifiers
-    identifier_policy: str = "low"  # -> IdentifierGenerator.policy_for
+    # "vault" (sequential v0/v1/... locals) | "low" | "medium" | "strong" |
+    # "hex" (hex-digit-looking names)
+    identifier_policy: str = "vault"  # -> IdentifierGenerator.policy_for
 
     # output
     pretty: bool = False
@@ -104,8 +142,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "integrity_regions": 3,
         "load_verify_regions": 3,
         "build_specific_keys": True,
-        "dispatch": "cascade",
+        "dispatch": "auto",
         "nonlinear_vm": False,
+        "vm_family": "auto",
+        "dispatch_noise": 0,
         "watchdog": False,
         "watchdog_threshold": 0,
         "anti_debug": False,
@@ -118,9 +158,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "controlled_failures": False,
         "opaque_predicates": False,
         "self_file_check": False,
-        "identifier_policy": "low",
+        "identifier_policy": "vault",
         "pretty": False,
         "minify": True,
+        "scattered_payload": True,
     },
     "medium": {
         "name": "medium",
@@ -134,8 +175,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "integrity_regions": 4,
         "load_verify_regions": 4,
         "build_specific_keys": True,
-        "dispatch": "cascade",
+        "dispatch": "auto",
         "nonlinear_vm": True,
+        "vm_family": "auto",
+        "dispatch_noise": 2,
         "watchdog": True,
         "watchdog_threshold": 750,
         "watchdog_step": 3,
@@ -149,9 +192,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "controlled_failures": False,
         "opaque_predicates": True,
         "self_file_check": False,
-        "identifier_policy": "medium",
+        "identifier_policy": "vault",
         "pretty": False,
         "minify": True,
+        "scattered_payload": True,
     },
     "strong": {
         "name": "strong",
@@ -165,8 +209,10 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "integrity_regions": 5,
         "load_verify_regions": 5,
         "build_specific_keys": True,
-        "dispatch": "tree",
+        "dispatch": "auto",
         "nonlinear_vm": True,
+        "vm_family": "auto",
+        "dispatch_noise": 4,
         "watchdog": True,
         "watchdog_threshold": 220,
         "watchdog_step": 3,
@@ -180,11 +226,59 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "controlled_failures": True,
         "opaque_predicates": True,
         "self_file_check": True,
-        "identifier_policy": "strong",
-        "pretty": True,
-        "minify": False,
+        "binary_payload": True,
+        "diverse_consts": True,
+        "scattered_payload": True,
+        "identifier_policy": "vault",
+        "pretty": False,
+        "minify": True,
     },
 }
+
+
+#: Valid values for ``vm_family`` and ``dispatch``.
+VM_FAMILIES = ("classic", "soa", "threaded", "scrambled")
+DISPATCH_STRATEGIES = ("cascade", "tree", "table", "indirect")
+
+#: Per-preset pools used when ``vm_family == "auto"``.  A build seed selects
+#: one member deterministically, so two builds of the same preset can execute
+#: the same source on materially different interpreter architectures.
+FAMILY_POOLS: Dict[str, List[str]] = {
+    "low": ["classic", "soa"],
+    "medium": ["classic", "soa", "threaded"],
+    "strong": ["soa", "threaded", "scrambled"],
+}
+
+#: Per-preset pools used when ``dispatch == "auto"``.  The dispatch control
+#: shape (inline ladder, decision tree, closure table, remapped-key table)
+#: then also varies per build instead of being fixed by the preset.
+DISPATCH_POOLS: Dict[str, List[str]] = {
+    "low": ["cascade", "indirect"],
+    "medium": ["cascade", "tree", "table", "indirect"],
+    "strong": ["cascade", "tree", "table", "indirect"],
+}
+
+
+def resolve_shapes(cfg: "PresetConfig", seed: int) -> None:
+    """Resolve ``auto`` values for ``vm_family`` and ``dispatch`` in place.
+
+    Deterministic on ``(preset, seed)`` so every stage of a build sees the
+    same concrete shape and the build stays byte-reproducible.  Concrete
+    values (or overrides) pass through untouched.
+    """
+    from vault.utils.random import DeterministicRandom
+
+    preset = cfg.name
+    if cfg.vm_family == "auto":
+        pool = FAMILY_POOLS.get(preset, ["classic"])
+        cfg.vm_family = DeterministicRandom(
+            "vault-shape:%s:%s" % (seed, preset)
+        ).choice(pool)
+    if cfg.dispatch == "auto":
+        pool = DISPATCH_POOLS.get(preset, ["indirect"])
+        cfg.dispatch = DeterministicRandom(
+            "vault-dispatch:%s:%s" % (seed, cfg.vm_family)
+        ).choice(pool)
 
 
 def get_preset(name: str, overrides: Dict[str, Any] | None = None) -> PresetConfig:
@@ -210,11 +304,18 @@ def get_preset(name: str, overrides: Dict[str, Any] | None = None) -> PresetConf
         raise ConfigError("load_verify_regions must be in [0, integrity_regions].")
     if cfg.watchdog_threshold < 0:
         raise ConfigError("watchdog_threshold must be non-negative.")
-    if cfg.dispatch not in ("cascade", "tree", "table"):
+    if cfg.vm_family not in VM_FAMILIES + ("auto",):
+        raise ConfigError(
+            f"unsupported vm_family '{cfg.vm_family}'; "
+            f"choose one of {VM_FAMILIES} or 'auto'."
+        )
+    if cfg.dispatch not in DISPATCH_STRATEGIES + ("auto",):
         raise ConfigError(
             f"unsupported dispatch strategy '{cfg.dispatch}'; "
-            "choose one of cascade, tree, table."
+            "choose one of cascade, tree, table, indirect or auto."
         )
+    if cfg.dispatch_noise < 0:
+        raise ConfigError("dispatch_noise must be non-negative.")
     return cfg
 
 

@@ -35,6 +35,8 @@ class BuildStats:
     preset: str = "low"
     target: str = "lua51"
     source_lines: int = 0
+    vm_family: str = "classic"
+    dispatch: str = "cascade"
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable dictionary."""
@@ -50,6 +52,8 @@ class BuildStats:
             "preset": self.preset,
             "target": self.target,
             "source_lines": self.source_lines,
+            "vm_family": self.vm_family,
+            "dispatch": self.dispatch,
         }
 
     def format_cli(self) -> str:
@@ -59,6 +63,8 @@ class BuildStats:
             "-------------------------",
             f"Target:              {self.target}",
             f"Preset:              {self.preset}",
+            f"VM family:           {self.vm_family}",
+            f"Dispatch:            {self.dispatch}",
             f"Seed:                {self.seed}",
             f"Source size:         {self.source_size} bytes ({self.source_lines} lines)",
             f"Output size:         {self.output_size} bytes",

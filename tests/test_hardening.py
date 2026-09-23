@@ -23,13 +23,24 @@ SMALL = "local s = 0\nfor i = 1, 40 do s = s + i end\nprint(s)\n"
 
 
 def _run_source(lua_interp, text: str):
+    import os
     import subprocess
+    import tempfile
 
-    if lua_interp.endswith((".py", ".pyw")):
-        cmd = [sys.executable, lua_interp, "-e", text]
-    else:
-        cmd = [lua_interp, "-e", text]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    fd, path = tempfile.mkstemp(suffix=".lua")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        if lua_interp.endswith((".py", ".pyw")):
+            cmd = [sys.executable, lua_interp, path]
+        else:
+            cmd = [lua_interp, path]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def test_opaque_predicate_is_always_true_and_seed_specific():

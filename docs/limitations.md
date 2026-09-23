@@ -15,13 +15,20 @@ diagnostic — nothing is silently mis-compiled:
     and generic `for` loops).
   * `..=` concatenating compound assignment.
   * `!=` as an alias for `~=`.
+  * Integer division `//` and its compound form `//=`.
+  * `const` bindings (immutability enforced at compile time; lowered to a
+    plain `local`).
+  * Backtick string interpolation (`` `hello {name}` ``) with `tostring`
+    semantics and `\`` / `\{` / `\\` / newline escapes.
+  * `if ... then ... elseif ... else ... end` used as an *expression*.
   * Type annotations, which are parsed and discarded: `local x: T`,
     annotated parameters and return types (`: (T, U) -> R`), vararg
     annotations (`...: T`), optional/union/intersection types and
     `{[K]: V}` table types.
+  * The `\u{...}` and `\z` string escapes (accepted on both targets as a
+    permissive superset of Lua 5.1 escaping).
 * Other Luau constructs are **not** supported and are reported: `type` /
-  `export type` / `declare` statements, string interpolation
-  (`` `hello {name}` ``), and `if ... then ... else ...` expressions.
+  `export type` / `declare` statements.
 * Lua 5.2+ semantics (integer division, bitwise operators, `goto`,
   `__len`, `table.unpack` in 5.3+, etc.) are not available.
 
@@ -68,8 +75,9 @@ of defeating the compiled artifact. They are not a proof of resilience:
 
 * All decoding happens inside the output file itself; a determined analyst
   with a trace debugger can replay the VM at the Lua level.
-* `pretty` output (the `strong` preset) trades readability for direct
-  quantity of meat; use the minified output for distribution.
+* The `strong` preset is emitted minified by default to reduce "meat" for the
+  analyst; pass `--pretty` when you want an audit-friendly form. Formatting
+  never changes what the payload contains.
 * No protection covers the runtime edits: modifying the emitted file without
   updating its integrity checks is expected to abort the program, which is
   the intended failure mode.
@@ -78,11 +86,25 @@ of defeating the compiled artifact. They are not a proof of resilience:
 
 * Output size grows roughly linearly with input size; the included VM + VM
   dispatch adds a fixed constant per build (several kilobytes).
+* Scattering (`scattered_payload`) caps the number of payload chunk locals it
+  emits so the runtime stays under Lua 5.1's 200-locals-per-function limit;
+  the largest blobs are scattered first and the remainder stay single
+  literals, so very large payloads only partially scatter.
+* Scattering uses the printable-alphabet payload encoding, so under `strong`
+  the binary byte container is not used while `scattered_payload` is on
+  (binary bytes are non-printable and would defeat the scatter's purpose by
+  rendering as `\ddd` escape walls).
 * Runtime is a plain Lua interpreter; expect a significant slowdown versus
   running the original bytecode, on the order of tens of times, worst case
   on the `strong` preset with the watchdog at its default threshold.
 * The theoretical speed limit is a moving target; do not use Vault-Obf for
   CPU-bound patches where latency matters.
+* Reversing-evidence numbers (structure-recovery fingerprints) are produced
+  by `tools/reversing_bench.py`. The optional `--choco-command` hook runs a
+  reference obfuscator for a head-to-head ratio, but only when the tool and
+  its interpreter are available on the benchmarking machine; the committed
+  reports in `docs/evidence/` are vault-only unless a choco run is performed
+  locally.
 
 ## Determinism
 

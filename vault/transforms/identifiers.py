@@ -27,12 +27,15 @@ class IdentifierPolicy:
         charset: Allowed characters for generated names.
         min_len / max_len: Length bounds for generated names.
         prefix: Optional mandatory prefix.
+        numbered: Emit sequential ``v0``, ``v1``, ``v2``... names (the
+            vault-obfuscator style) instead of drawing from ``charset``.
     """
 
     charset: str
     min_len: int
     max_len: int
     prefix: str = ""
+    numbered: bool = False
 
 
 class IdentifierGenerator:
@@ -53,6 +56,7 @@ class IdentifierGenerator:
             )
         self.policy = policy
         self._used: Set[str] = set()
+        self._n = 0
         if reserved:
             # Reserve words that appear as identifiers in the emitted VM
             # template so generated names can never shadow them.
@@ -63,6 +67,17 @@ class IdentifierGenerator:
     @staticmethod
     def policy_for(preset: str) -> "IdentifierPolicy":
         """Return a policy appropriate for the given preset name."""
+        if preset == "vault":
+            # Sequential shortcut locals in the style of the classic
+            # vault-obfuscator ("local v0", "local v1", ...): short, similar,
+            # and easy to skim past, unlike readable or hex-dump names.
+            return IdentifierPolicy(
+                charset="v",
+                min_len=1,
+                max_len=1,
+                prefix="v",
+                numbered=True,
+            )
         if preset == "low":
             return IdentifierPolicy(
                 charset="abcdefghijklmnopqrstuvwxyz",
@@ -75,6 +90,17 @@ class IdentifierGenerator:
                 charset="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
                 min_len=6,
                 max_len=14,
+                prefix="_",
+            )
+        if preset == "hex":
+            # Identifiers that look like bare hex byte data (``_a56f8c``,
+            # ``_c9ab4f``).  Only hex digits appear after the leading ``_`` so
+            # the names blend with hex-dump-style output while remaining valid
+            # Lua identifiers (the first body character is forced to a letter).
+            return IdentifierPolicy(
+                charset="0123456789abcdef",
+                min_len=6,
+                max_len=16,
                 prefix="_",
             )
         # medium
@@ -103,6 +129,21 @@ class IdentifierGenerator:
 
     def next(self, fallback: str = "") -> str:
         """Return a fresh unused identifier."""
+        if self.policy.numbered:
+            # Sequential v0, v1, v2, ... locals (vault-obfuscator style).
+            # Skipping is only ever needed if a reserved word were shaped
+            # like ``vN``; keep the loop for safety.
+            for _ in range(1000):
+                name = "%s%d" % (self.policy.prefix, self._n)
+                self._n += 1
+                if not name or name in LUA_KEYWORDS or name in self._used:
+                    continue
+                self._used.add(name)
+                return name
+            name = "%s%d" % (self.policy.prefix, self._n)
+            self._n += 1
+            self._used.add(name)
+            return name
         for _ in range(1000):
             name = self._generate_one()
             if not name or name in LUA_KEYWORDS or name in self._used:

@@ -1,0 +1,89 @@
+{
+  "generated": "2026-09-21T21:24:47",
+  "source": "local function fib(x)\n  if x < 2 then return x end\n  return fib(x - 1) + fib(x - 2)\nend\nlocal items = {}\nfor i = 1, 8 do items[#items + 1] = fib(i) end\nlocal accum = 0\nfor _, vk in pairs(items) do accum = accum + vk end\nlocal msg = \"vault_alpha_77:\" .. tostring(accum)\nprint(msg)\n",
+  "runs": 3,
+  "target": "lua51",
+  "preset": "low",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "metric_descriptions": [
+    {
+      "name": "sentinels",
+      "desc": "benchmark sentinel literals quoted verbatim in the output (0 is the goal)"
+    },
+    {
+      "name": "ids",
+      "desc": "source identifiers that survive verbatim"
+    },
+    {
+      "name": "op==",
+      "desc": "opcode-dispatch comparison sites (`op==N` cascade recognisability)"
+    },
+    {
+      "name": "handlers",
+      "desc": "anonymous five-argument closures matching the VM handler-closure signature"
+    },
+    {
+      "name": "seq-frame",
+      "desc": "sequential `local a=1..local k=11` frame-slot locator block surviving in the output"
+    },
+    {
+      "name": "while",
+      "desc": "`while` loop occurrences (interpreter loop surface)"
+    }
+  ],
+  "vault": {
+    "recoverability": 0.35,
+    "cross_fingerprint": 0.565,
+    "per_run_recoverability": [
+      0.35,
+      0.35,
+      0.35
+    ],
+    "runs": [
+      {
+        "seed": 1,
+        "size_kb": 22.3,
+        "recoverability": 0.35,
+        "metrics": {
+          "leaked_sentinels": [],
+          "leaked_ids": [],
+          "op_ladder_count": 0,
+          "handler_closures": 41,
+          "sequential_frame": true,
+          "while_loops": 6
+        }
+      },
+      {
+        "seed": 2,
+        "size_kb": 23.3,
+        "recoverability": 0.35,
+        "metrics": {
+          "leaked_sentinels": [],
+          "leaked_ids": [],
+          "op_ladder_count": 0,
+          "handler_closures": 41,
+          "sequential_frame": true,
+          "while_loops": 6
+        }
+      },
+      {
+        "seed": 3,
+        "size_kb": 22.5,
+        "recoverability": 0.35,
+        "metrics": {
+          "leaked_sentinels": [],
+          "leaked_ids": [],
+          "op_ladder_count": 0,
+          "handler_closures": 41,
+          "sequential_frame": true,
+          "while_loops": 6
+        }
+      }
+    ]
+  },
+  "choco": null
+}

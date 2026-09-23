@@ -83,8 +83,20 @@ prototype stores:
 
 `vault/bytecode.encoder.BytecodeEncoder` encodes the image into the payload
 tables injected into the output. The `vault/vm.emitter` then serialises each
-numeric array as an opaque printable string blob (see `vault/utils/luaval`),
-so the payload holds no long bare integer lists.
+numeric array as an opaque string blob (see `vault/utils/luaval`), so the
+payload holds no long bare integer lists. Blobs use either the printable
+base-45 varint alphabet or — when `binary_payload` is enabled — a proprietary
+binary byte container (`BINARY_BLOB_MAGIC` + format selector + per-blob key +
+signed LEB128/fixed-width little-endian fields), emitted as straight ASCII
+`\ddd` escapes.
+
+Each prototype's constant blob is recorded with a per-build scheme
+(`diverse_consts`): prototype `cmode` picks the integer/string/float forms
+(plain, affine-minus with a string xor key, or affine-plus with reversed
+strings) so the constant blobs are not one uniform shape, and per-prototype
+`cgrp` optionally stores every full 6-word instruction group in the build's
+shuffled operand order (the runtime's load loop reorders it back through the
+build's `CW` permutation).
 
 ## VM emitter
 
@@ -110,7 +122,8 @@ settings:
 | `proto_shuffle`       | Shuffle internal function prototype order         |
 | `const_shuffle`       | Shuffle constant pool order                       |
 | `upval_shuffle`       | Shuffle upvalue descriptor order                  |
-| `dispatch`            | Dispatch strategy: `cascade`, `tree` or `table`    |
+| `dispatch`            | Dispatch strategy: `cascade`, `tree`, `table` or `indirect` |
+| `vm_family`           | VM family: `classic`, `soa`, `threaded` or `scrambled` |
 | `integrity_regions`   | Number of protected output regions                |
 | `load_verify_regions` | Number of regions verified at startup             |
 | `build_specific_keys` | Mix the build secret into every integrity checksum|
@@ -124,7 +137,9 @@ settings:
 | `vm_state_validation` | Bounds-check the instruction pointer / frame chain|
 | `bytecode_integrity`  | Re-verify decoded instruction chunks at runtime    |
 | `controlled_failures` | Route aborts through one opaque sentinel error     |
-| `identifier_policy`   | Identifier rename strategy (low/medium/strong)    |
+| `binary_payload`      | Ship payload arrays as custom binary byte containers instead of printable blobs |
+| `diverse_consts`      | Per-prototype constant schemes + per-build operand-order shuffle |
+| `identifier_policy`   | Identifier rename strategy (`vault`/`low`/`medium`/`strong`/`hex`) |
 | `pretty` / `minify`   | Output formatting                                 |
 | `line_wrap`           | Max line width when pretty-printing               |
 

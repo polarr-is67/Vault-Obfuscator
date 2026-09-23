@@ -41,6 +41,7 @@ from vault.ast.nodes import (
     GlobalFunction,
     If,
     IfBranch,
+    IfExpr,
     While,
     Repeat,
     NumericFor,
@@ -239,23 +240,69 @@ class _FuncCtx:
     def capture_upvalue(self, name: str) -> Optional[int]:
         if name in self.upval_by_name:
             return self.upval_by_name[name]
-        ctx: Optional[_FuncCtx] = self.parent
+        # Contexts traversed between this function and the one that owns the
+        # variable, from the direct parent up.  When the owner is a *grand*
+        # parent, every intermediate context that does not itself reference
+        # the name must still declare it as an upvalue so the capture can be
+        # threaded registration-wise: the CLOSURE handler instantiates an
+        # ``instack`` capture against the *direct* enclosing frame's
+        # registers, so a grandchild cannot point at a register of a frame it
+        # is not closed over by.  Canonical Lua handles this by giving each
+        # intermediate prototype its own upvalue slot for the name.
+        chain: List["_FuncCtx"] = []
+        ctx: Optional["_FuncCtx"] = self.parent
         while ctx is not None:
             r = ctx.local_reg(name)
             if r is not None:
+                # Owned as a register local of ``ctx``.  Thread outwards-first
+                # so each context wraps the slot or inherited upvalue of the
+                # context immediately *above* it, ending with this function
+                # capturing the direct parent's upvalue index.  Only the
+                # context whose direct parent is the owner may capture the
+                # owner's register directly; every further-out context
+                # inherits its parent's upvalue index.
+                threaded = r
+                for i_m, m in enumerate(reversed(chain)):
+                    if i_m == 0:
+                        threaded = m._ensure_upvalue(name, ("instack", threaded))
+                    else:
+                        threaded = m._ensure_upvalue(name, ("upval", threaded))
                 idx = len(self.upvals)
-                self.upvals.append(UpvalDesc(instack=True, idx=r))
+                if not chain:
+                    self.upvals.append(UpvalDesc(instack=True, idx=r))
+                else:
+                    self.upvals.append(UpvalDesc(instack=False, idx=threaded))
                 self.upval_by_name[name] = idx
                 return idx
             if name in ctx.upval_by_name:
+                tid = ctx.upval_by_name[name]
+                for m in reversed(chain):
+                    tid = m._ensure_upvalue(name, ("upval", tid))
                 idx = len(self.upvals)
-                self.upvals.append(
-                    UpvalDesc(instack=False, idx=ctx.upval_by_name[name])
-                )
+                self.upvals.append(UpvalDesc(instack=False, idx=tid))
                 self.upval_by_name[name] = idx
                 return idx
+            chain.append(ctx)
             ctx = ctx.parent
         return None
+
+    def _ensure_upvalue(self, name: str, src: tuple) -> int:
+        """Give ``self`` an upvalue for ``name`` unless it already has one.
+
+        ``src`` is ``("instack", register)`` or ``("upval", index)`` of the
+        context immediately enclosing ``self``.  Returns the upvalue index
+        (existing or newly appended) so a caller in the next-inner context
+        can reference it.
+        """
+        if name in self.upval_by_name:
+            return self.upval_by_name[name]
+        idx = len(self.upvals)
+        kind, oid = src
+        self.upvals.append(
+            UpvalDesc(instack=(kind == "instack"), idx=oid)
+        )
+        self.upval_by_name[name] = idx
+        return idx
 
     # -- emission ---------------------------------------------------------
 
@@ -595,6 +642,8 @@ class IRBuilder:
         if isinstance(node, Paren):
             # Parentheses always yield exactly one value (Lua 5.1 truncation).
             return self._eval_expr(node.expr, ctx, single=True)
+        if isinstance(node, IfExpr):
+            return self._emit_if_expr(node, ctx)
         if isinstance(node, Vararg):
             if single:
                 r = ctx.new_reg()
@@ -685,6 +734,36 @@ class IRBuilder:
             ctx.mark(end)
         else:
             raise self._err(f"unsupported binary operator '{op}'.", None)
+
+    def _emit_if_expr(self, node: IfExpr, ctx: _FuncCtx) -> int:
+        """Lower a Luau ``if c then a elseif c2 then b else d`` expression.
+
+        Conditions are evaluated in order and short-circuit.  Every branch
+        writes its (single) value into the destination register; the last
+        branch has no condition and is reached when all conditions fail.  The
+        whole construct yields exactly one value, matching Luau semantics.
+        """
+        branches = node.branches
+        n = len(branches)
+        dst = ctx.new_reg()
+        labs = [_Label("ifx") for _ in branches]
+        end = _Label("ifx_end")
+        for i, br in enumerate(branches):
+            # Mark the branch label before its dispatch: a false condition
+            # from an earlier branch must land on this branch's own condition
+            # evaluation, not skip straight into its body.
+            ctx.mark(labs[i])
+            if br.cond is not None:
+                c = self._eval_expr(br.cond, ctx, single=True)
+                ctx.emit("JMPIFFALSE", c, 0, 0, labs[min(i + 1, n - 1)], 0)
+                ctx.free_reg(c)
+            val = self._eval_expr(br.body[0], ctx, single=True)
+            ctx.emit("MOVE", dst, val)
+            ctx.free_reg(val)
+            if i < n - 1:
+                ctx.emit("JMP", 0, 0, 0, end, 0)
+        ctx.mark(end)
+        return dst
 
     # ------------------------------------------------------------------
     # calls
@@ -786,20 +865,18 @@ class IRBuilder:
     def _emit_if(self, node: If, ctx: _FuncCtx) -> None:
         end = _Label("if_end")
         labels: List[_Label] = []
-        # Pre-generate a label per branch (first for else).
         for i in range(len(node.branches)):
             labels.append(_Label(f"elif_{i}"))
         for i, branch in enumerate(node.branches):
+            # The branch label is marked *before* its dispatch code so that a
+            # false condition from the previous branch lands exactly on this
+            # branch's own evaluation (and own dispatch), not on its body.
+            ctx.mark(labels[i])
             if branch.cond is not None:
                 c = self._eval_expr(branch.cond, ctx, single=True)
-                # jump to the next branch's label when false
                 target = labels[i + 1] if i + 1 < len(node.branches) else end
-                if i + 1 < len(node.branches) and node.branches[i + 1].cond is None:
-                    # next branch is the else: jump there
-                    target = labels[i + 1]
                 ctx.emit("JMPIFFALSE", c, 0, 0, target, 0)
                 ctx.free_reg(c)
-            ctx.mark(labels[i])
             if isinstance(branch.body, list):
                 ctx.enter_scope()
                 self._emit_block(branch.body, ctx)
@@ -905,6 +982,11 @@ class IRBuilder:
         self._emit_list_entry(var_regs[0], vals, 2, ctx)
         # free the values list
         self._free_list(vals, ctx)
+        # Luau generalized iteration: `for v in x` accepts tables and strings
+        # directly.  Normalise the (f, s, var) triple so a plain value is
+        # expanded to a real iterator before the loop head is entered.
+        if self.target == "luau":
+            self._emit_gfor_normalize(ctx, f, s, var_regs[0])
         # force the private locals to stay allocated
         head = _Label("gfor_head")
         exit = _Label("gfor_exit")
@@ -918,7 +1000,9 @@ class IRBuilder:
         ctx.emit("JMPIFFALSE", tmp, 0, 0, exit, 0)
         ctx.emit("MOVE", var_regs[0], tmp)
         for i in range(1, len(var_regs)):
-            ctx.emit("GETRET", var_regs[i], i)
+            # first iterator return is the control key (loop var 0); every
+            # further loop variable copies the i-th *following* return value.
+            ctx.emit("GETRET", var_regs[i], i + 1)
         ctx.free_reg(tmp)
         loop = _LoopCtx(head, exit, head)
         ctx.loops.append(loop)
@@ -931,7 +1015,128 @@ class IRBuilder:
         ctx.emit("JMP", 0, 0, 0, head, 0)
         ctx.mark(exit)
 
+    def _emit_gfor_normalize(self, ctx: _FuncCtx, f: int, s: int, v0: int) -> None:
+        """Expand ``for`` iterable values for the Luau target.
+
+        After the explicit triple ``(f, s, var)`` is materialised, ``f`` is
+        still the *value* in Luau when the program wrote ``for v in value``
+        (e.g. a table from ``GetChildren()`` or a string).  This pass rewrites
+        ``f`` to a real iterator when it holds a table or a string:
+
+        * table  -> ``f = next``, ``s = table``, ``var = nil``
+        * string -> a stateful closure that yields ``s:sub(i, i)`` one
+          character per call
+
+        ``__iter`` metamethod expansion and userdata iteration are not
+        supported and keep the stock 5.1 behaviour (a call-time error), which
+        is documented in the target notes.
+        """
+        t = ctx.new_reg()
+        l_tbl = _Label("gfor_tbl")
+        l_str = _Label("gfor_str")
+        l_done = _Label("gfor_done")
+        ctx.emit("ISTBL", t, f)
+        ctx.emit("JMPIFTRUE", t, 0, 0, l_tbl, 0)
+        ctx.emit("ISTRG", t, f)
+        ctx.emit("JMPIFTRUE", t, 0, 0, l_str, 0)
+        ctx.emit("JMP", 0, 0, 0, l_done, 0)
+        # table path: next(t, nil)
+        ctx.mark(l_tbl)
+        ctx.emit("MOVE", s, f)
+        ctx.emit("LOADGLOBAL", f, self._const(ctx, "next"))
+        ctx.emit("LOADNIL", v0)
+        ctx.emit("JMP", 0, 0, 0, l_done, 0)
+        # string path: a fresh, stateful char iterator for this loop entry.
+        ctx.mark(l_str)
+        self._emit_string_iter(ctx, f, s)
+        ctx.emit("LOADNIL", v0)
+        ctx.mark(l_done)
+        ctx.free_reg(t)
+
+    def _emit_string_iter(self, ctx: _FuncCtx, f: int, s: int) -> None:
+        """Emit a stateful character iterator bound to the string in ``s``.
+
+        ``s`` stays the iteration-state argument (the generic-for protocol
+        calls ``f(state, control)``); the character index is kept in a fresh
+        local of the enclosing frame and advanced by the iterator closure,
+        which the protocol supplies as a new closure for each loop entry.
+        """
+        si = self._new_internal_name("stri")
+        si_reg = ctx.declare_local(si)
+        # si = 0  (fresh counter for this loop entry)
+        ctx.emit("LOADCONST", si_reg, self._const(ctx, 0.0))
+        # `s` is handed to the generic-for protocol as the state argument; the
+        # iterable string currently lives in `f`, so copy it over before `f`
+        # is replaced by the iterator closure.
+        ctx.emit("MOVE", s, f)
+        func = self._string_iter_ast(si, self._new_internal_name("ss"), self._new_internal_name("tt"))
+        proto_id = self._lower_function(func, ctx)
+        ch = ctx.new_reg()
+        ctx.emit("CLOSURE", ch, proto_id)
+        ctx.emit("MOVE", f, ch)
+        ctx.free_reg(ch)
+
+    def _string_iter_ast(self, si: str, ss: str, tt: str) -> FunctionDef:
+        """AST for the string-iteration helper prototype.
+
+        ``function(ss, tt)
+             si = si + 1
+             if si <= #ss then return ss:sub(si, si) end
+           end``
+
+        ``si`` is an upvalue of the enclosing frame (declared by
+        ``_emit_string_iter``); ``ss``/``tt`` shadow nothing because they use
+        fresh internal names the user cannot reference.  The iterator returns
+        one character per call (``nil`` past the end), which is exactly Luau's
+        string-iteration contract for single loop variables.
+        """
+        inc = Assignment(
+            targets=[Name(si, loc=())],
+            values=[BinaryOp(op="+", left=Name(si, loc=()), right=Literal(1.0, loc=()), loc=())],
+            loc=(0, 0),
+        )
+        done = If(
+            branches=[
+                IfBranch(
+                    cond=BinaryOp(
+                        op="<=",
+                        left=Name(si, loc=()),
+                        right=UnaryOp(op="#", operand=Name(ss, loc=()), loc=()),
+                        loc=(0, 0),
+                    ),
+                    body=[
+                        Return(
+                            values=[
+                                MethodCall(
+                                    obj=Name(ss, loc=()),
+                                    method="sub",
+                                    args=[Name(si, loc=()), Name(si, loc=())],
+                                    loc=(0, 0),
+                                )
+                            ],
+                            loc=(0, 0),
+                        )
+                    ],
+                    loc=(0, 0),
+                )
+            ],
+            loc=(0, 0),
+        )
+        return FunctionDef(
+            params=[ss, tt],
+            is_vararg=False,
+            body=[inc, done],
+            loc=(0, 0),
+        )
+
     def _emit_list_entry(self, dst: int, vals: List, idx: int, ctx: _FuncCtx) -> None:
+        entry = vals[idx] if idx < len(vals) else None
+        if entry is None:
+            ctx.emit("LOADNIL", dst)
+        elif isinstance(entry, int):
+            ctx.emit("MOVE", dst, entry)
+        else:
+            ctx.emit("GETRET", dst, entry[1])
         entry = vals[idx] if idx < len(vals) else None
         if entry is None:
             ctx.emit("LOADNIL", dst)
