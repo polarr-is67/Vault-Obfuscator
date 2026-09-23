@@ -1,21 +1,70 @@
-MIT License
+VAULT SOURCE-AVAILABLE LICENSE
+Version 1.0
 
 Copyright (c) 2026 Vault-Obf Contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. GRANT OF RIGHTS
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permission is granted, free of charge, to any person obtaining a copy of
+this software and associated source code (the "Software") to:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+- view and inspect the source code;
+- study the Software for educational, research, and security purposes;
+- run the Software for personal or internal use;
+- modify the Software for personal or internal use;
+- create private forks for experimentation, testing, and development;
+- submit modifications or improvements to the original project.
+
+2. RESTRICTIONS
+
+Without prior written permission from the copyright holder, you may NOT:
+
+- redistribute the Software or a modified version of the Software;
+- publish a fork or modified version of the Software;
+- incorporate substantial portions of the Software into another project;
+- use substantial portions of the Software to create a competing
+  obfuscator, compiler, VM, protection system, or substantially similar
+  software;
+- rebrand or present the Software or a substantial portion of it as your
+  own software;
+- sell, sublicense, or commercially distribute the Software or a
+  derivative work;
+- remove, modify, or obscure copyright, license, or attribution notices.
+
+3. DERIVATIVE WORKS
+
+Private modifications are permitted.
+
+Any publicly distributed derivative work containing substantial portions
+of the Software requires prior written permission from the copyright
+holder.
+
+Independent implementations that do not copy substantial portions of the
+Software's source code are not prohibited by this license.
+
+4. ATTRIBUTION
+
+Any permitted redistribution or use must retain this license and the
+original copyright notice.
+
+5. CONTRIBUTIONS
+
+Unless otherwise agreed in writing, contributions submitted to the
+official Vault project are provided under this license.
+
+6. COMMERCIAL USE
+
+Commercial use, sale, licensing, hosting, or distribution of the Software
+or substantial portions of it requires prior written permission from the
+copyright holder.
+
+7. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
